@@ -57,10 +57,12 @@ const ACTIVITY_TYPES = {
 
 /* ============================== SUPABASE ============================== */
 // Llave "publishable" (equivalente a anon/public) — segura para el frontend.
-// La escritura está permitida por las políticas RLS definidas en schema.sql;
-// antes de producción real, restringir esas políticas a usuarios autenticados.
+// Con las políticas de security_update.sql, esta llave sola ya NO alcanza
+// para leer ni escribir: cada request usa además el token de la persona
+// que inició sesión (ver ACCESS_TOKEN más abajo).
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://zvyuqbrvixpnggynrqfa.supabase.co";
 const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_KEY || "sb_publishable_G53F0OOT0-BzQlnXmen2XA_uZ1Yn9A9";
+let ACCESS_TOKEN = null; // token de sesión de Supabase Auth; null = sin iniciar sesión
 
 async function sb(path, options = {}) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
@@ -68,7 +70,7 @@ async function sb(path, options = {}) {
     body: options.body,
     headers: {
       apikey: SUPABASE_KEY,
-      Authorization: `Bearer ${SUPABASE_KEY}`,
+      Authorization: `Bearer ${ACCESS_TOKEN || SUPABASE_KEY}`,
       "Content-Type": "application/json",
       Prefer: options.prefer || "return=representation",
     },
@@ -80,6 +82,20 @@ async function sb(path, options = {}) {
   const txt = await res.text();
   return txt ? JSON.parse(txt) : null;
 }
+
+async function authRequest(endpoint, body) {
+  const res = await fetch(`${SUPABASE_URL}/auth/v1/${endpoint}`, {
+    method: "POST",
+    headers: { apikey: SUPABASE_KEY, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error_description || data.msg || data.error || "Error de autenticación");
+  return data;
+}
+const authSignIn = (email, password) => authRequest("token?grant_type=password", { email, password });
+const authSignUp = (email, password) => authRequest("signup", { email, password });
+
 
 function mapActividad(row) {
   return { id: row.id, table: "actividades", date: row.fecha, title: row.nombre, type: row.tipo, start: Number(row.hora_inicio), end: Number(row.hora_fin), personalId: row.responsable_id };
@@ -219,6 +235,7 @@ function useToast() {
 
 /* ============================== ROOT ============================== */
 export default function EvolucionaApp() {
+  const [session, setSession] = useState(null); // { email }
   const [view, setView] = useState("dashboard");
   const [events, setEvents] = useState([]);
   const [personal, setPersonal] = useState([]);
@@ -228,7 +245,7 @@ export default function EvolucionaApp() {
   const [modal, setModal] = useState(null); // {mode:'new'|'edit', event}
   const [detail, setDetail] = useState(null); // event being viewed
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState(null);
   const [saving, setSaving] = useState(false);
   const [toast, showToast] = useToast();
@@ -250,7 +267,19 @@ export default function EvolucionaApp() {
       setLoading(false);
     }
   }
-  React.useEffect(() => { loadAll(); }, []);
+  React.useEffect(() => { if (session) loadAll(); }, [session]);
+
+  function handleLogout() {
+    ACCESS_TOKEN = null;
+    setSession(null);
+    setEvents([]);
+    setPersonal([]);
+    setLoadError(null);
+  }
+
+  if (!session) {
+    return <LoginScreen onLogin={(s) => setSession(s)} />;
+  }
 
   const weekStart = addDays(monday, weekOffset * 7);
   const weekDays = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
@@ -404,9 +433,14 @@ export default function EvolucionaApp() {
           </div>
           <div className="flex items-center gap-3 shrink-0">
             <div className="hidden sm:flex items-center gap-2 pl-3 pr-1 py-1 rounded-full" style={{ border: `1px solid ${T.border}` }}>
-              <div className="w-7 h-7 rounded-full flex items-center justify-center text-white text-[11px] font-semibold" style={{ background: T.primary }}>DS</div>
-              <span className="text-[12.5px] font-medium pr-2">Diana Silva</span>
+              <div className="w-7 h-7 rounded-full flex items-center justify-center text-white text-[11px] font-semibold" style={{ background: T.primary }}>
+                {session.email.slice(0, 2).toUpperCase()}
+              </div>
+              <span className="text-[12.5px] font-medium pr-2">{session.email}</span>
             </div>
+            <button onClick={handleLogout} className="ev-btn px-3 py-2 text-[12.5px]" style={{ border: `1px solid ${T.border}` }}>
+              Cerrar sesión
+            </button>
           </div>
         </header>
 
@@ -423,6 +457,99 @@ export default function EvolucionaApp() {
       {modal && <EventModal ctx={ctx} onClose={() => setModal(null)} onSave={saveEvent} initial={modal} />}
       {detail && <DetailDrawer ctx={ctx} event={detail} onClose={() => setDetail(null)} onEdit={() => { setModal({ mode: "edit", event: detail }); setDetail(null); }} onDelete={() => deleteEvent(detail)} />}
       {toast && <Toast toast={toast} />}
+    </div>
+  );
+}
+
+/* ============================== LOGIN ============================== */
+function LoginScreen({ onLogin }) {
+  const [mode, setMode] = useState("signin"); // 'signin' | 'signup'
+  const [form, setForm] = useState({ nombre: "", correo: "", password: "" });
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [notice, setNotice] = useState(null);
+
+  function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
+
+  async function submit(e) {
+    e.preventDefault();
+    setLoading(true);
+    setError(null);
+    setNotice(null);
+    try {
+      if (mode === "signup") {
+        const res = await authSignUp(form.correo, form.password);
+        if (res.access_token) {
+          ACCESS_TOKEN = res.access_token;
+          try {
+            await sb("usuarios", {
+              method: "POST",
+              body: JSON.stringify({ id: res.user?.id, nombre: form.nombre || form.correo, correo: form.correo, rol: "coordinador" }),
+            });
+          } catch (_) { /* la cuenta ya quedó creada; el registro en "usuarios" se puede reintentar luego */ }
+          onLogin({ email: form.correo });
+        } else {
+          setNotice("Cuenta creada. Si tu proyecto exige confirmar el correo, revisa tu bandeja y luego inicia sesión aquí.");
+          setMode("signin");
+        }
+      } else {
+        const res = await authSignIn(form.correo, form.password);
+        ACCESS_TOKEN = res.access_token;
+        onLogin({ email: form.correo });
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div style={{ background: T.base, fontFamily: "'Inter', sans-serif" }} className="w-full min-h-[720px] flex items-center justify-center p-6">
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700&family=Inter:wght@400;500;600&display=swap');`}</style>
+      <form onSubmit={submit} className="ev-card w-full max-w-sm p-6" style={{ background: T.surface }}>
+        <div className="flex items-center gap-2 mb-1">
+          <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: T.primary }}>
+            <Sparkles size={16} color="#fff" />
+          </div>
+          <span style={{ fontFamily: "'Space Grotesk', sans-serif" }} className="text-[19px] font-semibold" >EVOLUCIONA</span>
+        </div>
+        <p className="text-[12px] mb-5" style={{ color: T.muted }}>
+          {mode === "signin" ? "Inicia sesión para continuar" : "Crea tu cuenta de coordinador"}
+        </p>
+
+        {mode === "signup" && (
+          <Field label="Nombre completo">
+            <input required value={form.nombre} onChange={(e) => set("nombre", e.target.value)} style={inputStyle} placeholder="Diana Silva" />
+          </Field>
+        )}
+        <div className="mt-3">
+          <Field label="Correo">
+            <input required type="email" value={form.correo} onChange={(e) => set("correo", e.target.value)} style={inputStyle} placeholder="tu@institucion.com" />
+          </Field>
+        </div>
+        <div className="mt-3">
+          <Field label="Contraseña">
+            <input required type="password" minLength={6} value={form.password} onChange={(e) => set("password", e.target.value)} style={inputStyle} placeholder="Mínimo 6 caracteres" />
+          </Field>
+        </div>
+
+        {error && <p className="text-[12px] mt-3 rounded-lg px-3 py-2" style={{ background: T.dangerSoft, color: T.danger }}>{error}</p>}
+        {notice && <p className="text-[12px] mt-3 rounded-lg px-3 py-2" style={{ background: T.accentSoft, color: "#8A5A17" }}>{notice}</p>}
+
+        <button type="submit" disabled={loading} className="ev-btn w-full justify-center px-4 py-2.5 text-[13px] text-white mt-4 disabled:opacity-50" style={{ background: T.primary }}>
+          {loading ? "Un momento…" : mode === "signin" ? "Iniciar sesión" : "Crear cuenta"}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => { setMode(mode === "signin" ? "signup" : "signin"); setError(null); setNotice(null); }}
+          className="w-full text-center text-[12.5px] mt-3 font-medium"
+          style={{ color: T.primary }}
+        >
+          {mode === "signin" ? "¿No tienes cuenta? Crear una" : "¿Ya tienes cuenta? Inicia sesión"}
+        </button>
+      </form>
     </div>
   );
 }
