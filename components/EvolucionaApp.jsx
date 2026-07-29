@@ -35,6 +35,7 @@ import {
   ResponsiveContainer,
   CartesianGrid,
 } from "recharts";
+import * as XLSX from "xlsx";
 
 /* ============================== TOKENS ============================== */
 const T = {
@@ -445,21 +446,6 @@ function personName(id) {
 }
 function personById(id) {
   return PERSONAL_STATE.find((p) => p.id === id);
-}
-function download(filename, content, mime) {
-  const blob = new Blob([content], { type: mime });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
-function csvEscape(v) {
-  const s = String(v ?? "");
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
 /* ============================== TOAST ============================== */
@@ -1874,20 +1860,46 @@ function Personal({ ctx }) {
 function Reportes({ ctx }) {
   const { events, personal, showToast, weekDays } = ctx;
 
-  function exportTurnosCSV() {
-    const rows = [["Fecha", "Tipo", "Inicio", "Fin", "Horas de jornada", "Responsable", "Cargo", "Área"]];
-    events.forEach((e) => {
-      const p = personById(e.personalId);
-      rows.push([e.date, ACTIVITY_TYPES[e.type].label, fmtHour(e.start), fmtHour(e.end), horasEfectivas(e), p?.nombre || "Sin asignar", p?.cargo || "-", p?.area || "-"]);
+  function descargarLibro(nombreArchivo, hojas) {
+    const wb = XLSX.utils.book_new();
+    hojas.forEach(({ nombre, filas, anchos }) => {
+      const ws = XLSX.utils.json_to_sheet(filas);
+      if (anchos) ws["!cols"] = anchos.map((wch) => ({ wch }));
+      XLSX.utils.book_append_sheet(wb, ws, nombre);
     });
-    download("evoluciona_turnos.csv", rows.map((r) => r.map(csvEscape).join(",")).join("\n"), "text/csv;charset=utf-8;");
-    showToast("Excel de turnos descargado (.csv)");
+    XLSX.writeFile(wb, nombreArchivo);
   }
-  function exportPersonalCSV() {
-    const rows = [["Nombre", "Cargo", "Área", "Horas/semana", "Estado"]];
-    personal.forEach((p) => rows.push([p.nombre, p.cargo, p.area, p.horas, p.estado]));
-    download("evoluciona_personal.csv", rows.map((r) => r.map(csvEscape).join(",")).join("\n"), "text/csv;charset=utf-8;");
-    showToast("Reporte de personal descargado (.csv)");
+
+  function exportTurnosXLSX() {
+    const filas = events
+      .slice()
+      .sort((a, b) => a.date.localeCompare(b.date) || a.start - b.start)
+      .map((e) => {
+        const p = personById(e.personalId);
+        return {
+          Fecha: e.date,
+          Tipo: ACTIVITY_TYPES[e.type].label,
+          Inicio: fmtHour(e.start),
+          Fin: fmtHour(e.end),
+          "Horas de jornada": horasEfectivas(e),
+          Responsable: p?.nombre || "Sin asignar",
+          Cargo: p?.cargo || "-",
+          Área: p?.area || "-",
+        };
+      });
+    descargarLibro("evoluciona_turnos.xlsx", [{ nombre: "Turnos", filas, anchos: [12, 20, 8, 8, 15, 22, 24, 14] }]);
+    showToast("Excel de turnos descargado (.xlsx)");
+  }
+  function exportPersonalXLSX() {
+    const filas = personal.map((p) => ({
+      Nombre: p.nombre,
+      Cargo: p.cargo,
+      Área: p.area,
+      "Horas/semana": p.horas,
+      Estado: p.estado,
+    }));
+    descargarLibro("evoluciona_personal.xlsx", [{ nombre: "Personal", filas, anchos: [22, 24, 14, 12, 10] }]);
+    showToast("Reporte de personal descargado (.xlsx)");
   }
   function exportPDF() {
     showToast("Abriendo vista de impresión para PDF…");
@@ -1896,8 +1908,8 @@ function Reportes({ ctx }) {
 
   const cards = [
     { title: "Programación semanal (PDF)", desc: `Vista de impresión de la semana del ${weekDays[0].toLocaleDateString("es-CO", { day: "numeric", month: "short" })}`, action: exportPDF, icon: Printer },
-    { title: "Turnos (Excel)", desc: "Listado completo de turnos asignados con responsable, cargo y área", action: exportTurnosCSV, icon: Download },
-    { title: "Personal asignado", desc: "Reporte de todo el personal registrado, su cargo, área y estado", action: exportPersonalCSV, icon: Download },
+    { title: "Turnos (Excel)", desc: "Listado completo de turnos asignados con responsable, cargo y área", action: exportTurnosXLSX, icon: Download },
+    { title: "Personal asignado", desc: "Reporte de todo el personal registrado, su cargo, área y estado", action: exportPersonalXLSX, icon: Download },
   ];
 
   return (
