@@ -38,6 +38,7 @@ import {
 import * as XLSX from "xlsx";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
+import html2canvas from "html2canvas";
 
 /* ============================== TOKENS ============================== */
 const T = {
@@ -1324,6 +1325,68 @@ function sugerirReemplazo({ turno, personal, eventosExistentes, reglas, novedade
   return candidatos[0] || null;
 }
 
+function TurnosMesGrid({ ctx }) {
+  const { isMaestro, events, monthOffset, setMonthOffset, setDetail, reglas, festivos } = ctx;
+  const turnos = events.filter((e) => TURNO_TYPES.includes(e.type));
+  const festivoSet = new Set((festivos || []).map((f) => f.fecha));
+  const base = new Date(TODAY.getFullYear(), TODAY.getMonth() + monthOffset, 1);
+  const gridStart = getMonday(new Date(base.getFullYear(), base.getMonth(), 1));
+  const cells = Array.from({ length: 42 }, (_, i) => addDays(gridStart, i));
+  const todayISO = toISO(TODAY);
+  const lastCellInMonth = cells.reduce((acc, d, i) => (d.getMonth() === base.getMonth() ? i : acc), 0);
+  const visibleCells = cells.slice(0, Math.ceil((lastCellInMonth + 1) / 7) * 7);
+
+  function chipsFor(dISO, tipo) {
+    return turnos.filter((t) => t.date === dISO && t.type === tipo);
+  }
+
+  return (
+    <div className="ev-card overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-3 border-b" style={{ borderColor: T.border }}>
+        <button className="p-1.5 rounded-lg no-print" style={{ border: `1px solid ${T.border}` }} onClick={() => setMonthOffset((m) => m - 1)}>
+          <ChevronLeft size={16} />
+        </button>
+        <p className="ev-display font-semibold text-[14px] capitalize">{MES_LABEL[base.getMonth()]} {base.getFullYear()}</p>
+        <button className="p-1.5 rounded-lg no-print" style={{ border: `1px solid ${T.border}` }} onClick={() => setMonthOffset((m) => m + 1)}>
+          <ChevronRight size={16} />
+        </button>
+      </div>
+      <div className="grid grid-cols-7 text-center py-2 border-b" style={{ borderColor: T.border }}>
+        {DIA_LABEL.map((d) => <p key={d} className="text-[11px] font-medium" style={{ color: T.muted }}>{d}</p>)}
+      </div>
+      <div className="grid grid-cols-7 overflow-x-auto ev-scroll" style={{ minWidth: 900 }}>
+        {visibleCells.map((d, i) => {
+          const dISO = toISO(d);
+          const inMonth = d.getMonth() === base.getMonth();
+          const dia = chipsFor(dISO, "turno_dia");
+          const noche = chipsFor(dISO, "turno_noche");
+          const festivoNombre = festivoSet.has(dISO) ? festivos.find((f) => f.fecha === dISO)?.nombre : null;
+          return (
+            <div
+              key={i}
+              onClick={() => isMaestro && ctx.setModal({ mode: "new", event: null, defaultType: "turno_dia", prefill: { date: dISO, start: 7, end: 17 } })}
+              className={`border-b border-r p-1.5 flex flex-col gap-1 min-h-[112px] ${isMaestro ? "cursor-pointer hover:bg-black/[0.02]" : ""}`}
+              style={{ borderColor: T.border, opacity: inMonth ? 1 : 0.4, background: festivoNombre ? T.accentSoft : "transparent" }}
+              title={festivoNombre || undefined}
+            >
+              <span className="ev-display text-[11.5px] font-semibold w-5 h-5 flex items-center justify-center rounded-full shrink-0" style={{ background: dISO === todayISO ? T.primary : "transparent", color: dISO === todayISO ? "#fff" : T.ink }}>
+                {d.getDate()}
+              </span>
+              <TurnoMiniBox tipo="turno_dia" chips={dia} onChipClick={setDetail} min={minRequeridoTurno(dISO, "turno_dia", reglas, festivoSet)} reglas={reglas} />
+              <TurnoMiniBox tipo="turno_noche" chips={noche} onChipClick={setDetail} min={minRequeridoTurno(dISO, "turno_noche", reglas, festivoSet)} reglas={reglas} />
+            </div>
+          );
+        })}
+      </div>
+      <div className="flex items-center gap-2 px-4 py-2 text-[11px] border-t" style={{ borderColor: T.border, color: T.muted }}>
+        <span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ background: T.accentSoft }} /> Día festivo
+        <span className="mx-1">·</span>
+        <AlertTriangle size={11} style={{ color: T.danger }} /> Falta personal mínimo o falta acompañamiento (operador sin auxiliar)
+      </div>
+    </div>
+  );
+}
+
 /* ============================== TURNOS (calendario) ============================== */
 function TurnosCalendario({ ctx }) {
   const { isMaestro, events, personal, monthOffset, setMonthOffset, setDetail, reglas, festivos } = ctx;
@@ -1386,49 +1449,7 @@ function TurnosCalendario({ ctx }) {
       </div>
       {generarOpen && <GenerarTurnosModal ctx={ctx} onClose={() => setGenerarOpen(false)} />}
 
-      <div className="ev-card overflow-hidden">
-        <div className="flex items-center justify-between px-4 py-3 border-b" style={{ borderColor: T.border }}>
-          <button className="p-1.5 rounded-lg" style={{ border: `1px solid ${T.border}` }} onClick={() => setMonthOffset((m) => m - 1)}>
-            <ChevronLeft size={16} />
-          </button>
-          <p className="ev-display font-semibold text-[14px] capitalize">{MES_LABEL[base.getMonth()]} {base.getFullYear()}</p>
-          <button className="p-1.5 rounded-lg" style={{ border: `1px solid ${T.border}` }} onClick={() => setMonthOffset((m) => m + 1)}>
-            <ChevronRight size={16} />
-          </button>
-        </div>
-        <div className="grid grid-cols-7 text-center py-2 border-b" style={{ borderColor: T.border }}>
-          {DIA_LABEL.map((d) => <p key={d} className="text-[11px] font-medium" style={{ color: T.muted }}>{d}</p>)}
-        </div>
-        <div className="grid grid-cols-7 overflow-x-auto ev-scroll" style={{ minWidth: 900 }}>
-          {visibleCells.map((d, i) => {
-            const dISO = toISO(d);
-            const inMonth = d.getMonth() === base.getMonth();
-            const dia = chipsFor(dISO, "turno_dia");
-            const noche = chipsFor(dISO, "turno_noche");
-            const festivoNombre = festivoSet.has(dISO) ? festivos.find((f) => f.fecha === dISO)?.nombre : null;
-            return (
-              <div
-                key={i}
-                onClick={() => isMaestro && ctx.setModal({ mode: "new", event: null, defaultType: "turno_dia", prefill: { date: dISO, start: 7, end: 17 } })}
-                className={`border-b border-r p-1.5 flex flex-col gap-1 min-h-[112px] ${isMaestro ? "cursor-pointer hover:bg-black/[0.02]" : ""}`}
-                style={{ borderColor: T.border, opacity: inMonth ? 1 : 0.4, background: festivoNombre ? T.accentSoft : "transparent" }}
-                title={festivoNombre || undefined}
-              >
-                <span className="ev-display text-[11.5px] font-semibold w-5 h-5 flex items-center justify-center rounded-full shrink-0" style={{ background: dISO === todayISO ? T.primary : "transparent", color: dISO === todayISO ? "#fff" : T.ink }}>
-                  {d.getDate()}
-                </span>
-                <TurnoMiniBox tipo="turno_dia" chips={dia} onChipClick={setDetail} min={minRequeridoTurno(dISO, "turno_dia", reglas, festivoSet)} reglas={reglas} />
-                <TurnoMiniBox tipo="turno_noche" chips={noche} onChipClick={setDetail} min={minRequeridoTurno(dISO, "turno_noche", reglas, festivoSet)} reglas={reglas} />
-              </div>
-            );
-          })}
-        </div>
-        <div className="flex items-center gap-2 px-4 py-2 text-[11px] border-t" style={{ borderColor: T.border, color: T.muted }}>
-          <span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ background: T.accentSoft }} /> Día festivo
-          <span className="mx-1">·</span>
-          <AlertTriangle size={11} style={{ color: T.danger }} /> Falta personal mínimo o falta acompañamiento (operador sin auxiliar)
-        </div>
-      </div>
+      <TurnosMesGrid ctx={ctx} />
 
       <div className="ev-card overflow-hidden max-w-2xl">
         <div className="px-4 py-3 border-b" style={{ borderColor: T.border }}>
@@ -1861,6 +1882,14 @@ function Personal({ ctx }) {
 /* ============================== REPORTES ============================== */
 function Reportes({ ctx }) {
   const { events, personal, showToast, weekDays } = ctx;
+  const actividadesRef = React.useRef(null);
+  const turnosRef = React.useRef(null);
+  const [generando, setGenerando] = useState(false);
+
+  async function capturarImagen(ref) {
+    const canvas = await html2canvas(ref.current, { scale: 2, backgroundColor: null, useCORS: true });
+    return canvas;
+  }
 
   function descargarLibro(nombreArchivo, hojas) {
     const wb = XLSX.utils.book_new();
@@ -1903,58 +1932,108 @@ function Reportes({ ctx }) {
     descargarLibro("evoluciona_personal.xlsx", [{ nombre: "Personal", filas, anchos: [22, 24, 14, 12, 10] }]);
     showToast("Reporte de personal descargado (.xlsx)");
   }
-  function exportPDF() {
-    const semanaISO = weekDays.map(toISO);
-    const eventosSemana = events.filter((e) => semanaISO.includes(e.date));
-    const actividades = eventosSemana
-      .filter((e) => ACTIVIDAD_TYPES.includes(e.type))
-      .sort((a, b) => a.date.localeCompare(b.date) || a.start - b.start);
-    const turnos = eventosSemana
-      .filter((e) => TURNO_TYPES.includes(e.type))
-      .sort((a, b) => a.date.localeCompare(b.date) || a.start - b.start);
+  async function exportPDF() {
+    setGenerando(true);
+    showToast("Generando PDF…");
+    try {
+      const doc = new jsPDF({ unit: "pt", format: "a4" });
+      const pageW = doc.internal.pageSize.getWidth();
+      const pageH = doc.internal.pageSize.getHeight();
+      const margin = 28;
+      const usableW = pageW - margin * 2;
 
-    const diaNombre = (dISO) => new Date(`${dISO}T00:00:00`).toLocaleDateString("es-CO", { weekday: "long", day: "numeric", month: "short" });
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(16);
+      doc.text("EVOLUCIONA", margin, margin);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(10);
+      doc.text(
+        `Programación semanal · ${weekDays[0].toLocaleDateString("es-CO", { day: "numeric", month: "long" })} – ${weekDays[6].toLocaleDateString("es-CO", { day: "numeric", month: "long", year: "numeric" })}`,
+        margin, margin + 14
+      );
 
-    const doc = new jsPDF();
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(16);
-    doc.text("EVOLUCIONA", 14, 16);
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(11);
-    doc.text(
-      `Programación semanal · ${weekDays[0].toLocaleDateString("es-CO", { day: "numeric", month: "long" })} – ${weekDays[6].toLocaleDateString("es-CO", { day: "numeric", month: "long", year: "numeric" })}`,
-      14, 24
-    );
+      // Espera un instante a que los calendarios ocultos terminen de pintar
+      await new Promise((r) => setTimeout(r, 50));
 
-    doc.setFontSize(12);
-    doc.setFont("helvetica", "bold");
-    doc.text("Actividades", 14, 34);
-    autoTable(doc, {
-      startY: 37,
-      head: [["Día", "Actividad", "Tipo", "Horario", "Responsable"]],
-      body: actividades.length
-        ? actividades.map((e) => [diaNombre(e.date), e.title, ACTIVITY_TYPES[e.type].label, fmtRange(e.start, e.end), personName(e.personalId)])
-        : [["—", "Sin actividades programadas esta semana", "", "", ""]],
-      headStyles: { fillColor: [27, 110, 88] },
-      styles: { fontSize: 9 },
-    });
+      async function pegarImagenEnPaginas(ref, titulo, esPrimera) {
+        const canvas = await capturarImagen(ref);
+        const imgData = canvas.toDataURL("image/png");
+        const imgWpt = usableW;
+        const imgHpt = (canvas.height * imgWpt) / canvas.width;
+        if (!esPrimera) doc.addPage();
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(13);
+        doc.text(titulo, margin, esPrimera ? margin + 34 : margin);
+        const tituloOffset = esPrimera ? 46 : 12;
+        const maxHpt = pageH - margin - (margin + tituloOffset);
+        if (imgHpt <= maxHpt) {
+          doc.addImage(imgData, "PNG", margin, margin + tituloOffset, imgWpt, imgHpt);
+        } else {
+          // La imagen es más alta que una página: la reparte en varias, cortando por franjas.
+          const franjasPx = Math.ceil(imgHpt / maxHpt);
+          const franjaAltoPx = canvas.height / franjasPx;
+          for (let i = 0; i < franjasPx; i++) {
+            if (i > 0) doc.addPage();
+            const recorte = document.createElement("canvas");
+            recorte.width = canvas.width;
+            recorte.height = franjaAltoPx;
+            recorte.getContext("2d").drawImage(canvas, 0, i * franjaAltoPx, canvas.width, franjaAltoPx, 0, 0, canvas.width, franjaAltoPx);
+            const franjaData = recorte.toDataURL("image/png");
+            const franjaHpt = (franjaAltoPx * imgWpt) / canvas.width;
+            doc.addImage(franjaData, "PNG", margin, i === 0 ? margin + tituloOffset : margin, imgWpt, franjaHpt);
+          }
+        }
+      }
 
-    const y2 = (doc.lastAutoTable?.finalY || 37) + 10;
-    doc.setFontSize(12);
-    doc.setFont("helvetica", "bold");
-    doc.text("Turnos", 14, y2);
-    autoTable(doc, {
-      startY: y2 + 3,
-      head: [["Día", "Turno", "Horario", "Horas", "Responsable"]],
-      body: turnos.length
-        ? turnos.map((e) => [diaNombre(e.date), e.title, fmtRange(e.start, e.end), `${horasEfectivas(e)}h`, personName(e.personalId)])
-        : [["—", "Sin turnos programados esta semana", "", "", ""]],
-      headStyles: { fillColor: [27, 110, 88] },
-      styles: { fontSize: 9 },
-    });
+      await pegarImagenEnPaginas(actividadesRef, "Actividades — vista semana", true);
+      await pegarImagenEnPaginas(turnosRef, "Turnos — vista mes", false);
 
-    doc.save(`evoluciona_programacion_${weekDays[0].toISOString().slice(0, 10)}.pdf`);
-    showToast("PDF de la programación semanal descargado");
+      const semanaISO = weekDays.map(toISO);
+      const eventosSemana = events.filter((e) => semanaISO.includes(e.date));
+      const actividades = eventosSemana
+        .filter((e) => ACTIVIDAD_TYPES.includes(e.type))
+        .sort((a, b) => a.date.localeCompare(b.date) || a.start - b.start);
+      const turnos = eventosSemana
+        .filter((e) => TURNO_TYPES.includes(e.type))
+        .sort((a, b) => a.date.localeCompare(b.date) || a.start - b.start);
+      const diaNombre = (dISO) => new Date(`${dISO}T00:00:00`).toLocaleDateString("es-CO", { weekday: "long", day: "numeric", month: "short" });
+
+      doc.addPage();
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(12);
+      doc.text("Detalle · Actividades de la semana", margin, margin);
+      autoTable(doc, {
+        startY: margin + 8,
+        head: [["Día", "Actividad", "Tipo", "Horario", "Responsable"]],
+        body: actividades.length
+          ? actividades.map((e) => [diaNombre(e.date), e.title, ACTIVITY_TYPES[e.type].label, fmtRange(e.start, e.end), personName(e.personalId)])
+          : [["—", "Sin actividades programadas esta semana", "", "", ""]],
+        headStyles: { fillColor: [27, 110, 88] },
+        styles: { fontSize: 9 },
+        margin: { left: margin, right: margin },
+      });
+
+      const y2 = (doc.lastAutoTable?.finalY || margin) + 20;
+      doc.setFontSize(12);
+      doc.text("Detalle · Turnos de la semana", margin, y2);
+      autoTable(doc, {
+        startY: y2 + 8,
+        head: [["Día", "Turno", "Horario", "Horas", "Responsable"]],
+        body: turnos.length
+          ? turnos.map((e) => [diaNombre(e.date), e.title, fmtRange(e.start, e.end), `${horasEfectivas(e)}h`, personName(e.personalId)])
+          : [["—", "Sin turnos programados esta semana", "", "", ""]],
+        headStyles: { fillColor: [27, 110, 88] },
+        styles: { fontSize: 9 },
+        margin: { left: margin, right: margin },
+      });
+
+      doc.save(`evoluciona_programacion_${weekDays[0].toISOString().slice(0, 10)}.pdf`);
+      showToast("PDF de la programación semanal descargado");
+    } catch (err) {
+      showToast(`No se pudo generar el PDF: ${err.message}`, "warn");
+    } finally {
+      setGenerando(false);
+    }
   }
 
   const cards = [
@@ -1974,11 +2053,28 @@ function Reportes({ ctx }) {
             <h3 className="ev-display font-semibold text-[14.5px] mb-1">{c.title}</h3>
             <p className="text-[12.5px]" style={{ color: T.muted }}>{c.desc}</p>
           </div>
-          <button onClick={c.action} className="ev-btn mt-4 px-3.5 py-2 text-[12.5px] text-white justify-center" style={{ background: T.primary }}>
-            Generar
+          <button
+            onClick={c.action}
+            disabled={c.title.includes("PDF") && generando}
+            className="ev-btn mt-4 px-3.5 py-2 text-[12.5px] text-white justify-center disabled:opacity-60"
+            style={{ background: T.primary }}
+          >
+            {c.title.includes("PDF") && generando ? "Generando…" : "Generar"}
           </button>
         </div>
       ))}
+
+      {/* Copias ocultas de los calendarios, solo para capturarlas como imagen en el PDF */}
+      <div style={{ position: "fixed", top: 0, left: -10000, width: 1000, background: T.base, padding: 16 }} aria-hidden="true">
+        <div ref={actividadesRef}>
+          <WeekView ctx={ctx} types={ACTIVIDAD_TYPES} />
+        </div>
+      </div>
+      <div style={{ position: "fixed", top: 0, left: -10000, width: 1000, background: T.base, padding: 16 }} aria-hidden="true">
+        <div ref={turnosRef}>
+          <TurnosMesGrid ctx={ctx} />
+        </div>
+      </div>
     </div>
   );
 }
