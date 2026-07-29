@@ -130,16 +130,20 @@ function mapUsuario(row) {
 }
 
 async function fetchAllRemote() {
-  const [personalRows, actRows, turnRows, bibRows] = await Promise.all([
+  const [personalRows, actRows, turnRows, bibRows, reglasRow, festivoRows] = await Promise.all([
     sb("personal?select=*&order=nombre"),
     sb("actividades?select=*"),
     sb("turnos?select=*"),
     sb("biblioteca_actividades?select=*&order=nombre"),
+    sb("reglas_turnos?select=*&limit=1"),
+    sb("festivos?select=*&order=fecha"),
   ]);
   return {
     personal: personalRows.map(mapPersonal),
     events: [...actRows.map(mapActividad), ...turnRows.map(mapTurno)],
     biblioteca: bibRows.map(mapBiblioteca),
+    reglas: reglasRow && reglasRow[0] ? mapReglas(reglasRow[0]) : null,
+    festivos: festivoRows.map(mapFestivo),
   };
 }
 async function fetchEventsRemote() {
@@ -216,6 +220,59 @@ async function updateUsuarioRolRemote(id, rol) {
   return mapUsuario(row);
 }
 
+function mapReglas(row) {
+  return {
+    id: row.id,
+    horasSemanaObjetivo: Number(row.horas_semana_objetivo),
+    personalMinTurnoDia: Number(row.personal_min_turno_dia),
+    personalMinTurnoNoche: Number(row.personal_min_turno_noche),
+    personalMinFinSemanaFestivo: Number(row.personal_min_fin_semana_festivo),
+    descansoMinHoras: Number(row.descanso_min_horas),
+    cargosTurno: row.cargos_turno || [],
+    turnosDiaIdeal: Number(row.turnos_dia_ideal),
+    turnosNocheIdeal: Number(row.turnos_noche_ideal),
+    turnosDiaAlterno: Number(row.turnos_dia_alterno),
+    turnosNocheAlterno: Number(row.turnos_noche_alterno),
+    finesSemanaLibresMes: Number(row.fines_semana_libres_mes),
+  };
+}
+async function fetchReglas() {
+  const rows = await sb("reglas_turnos?select=*&limit=1");
+  return rows && rows[0] ? mapReglas(rows[0]) : null;
+}
+async function updateReglasRemote(form) {
+  const body = {
+    horas_semana_objetivo: Number(form.horasSemanaObjetivo),
+    personal_min_turno_dia: Number(form.personalMinTurnoDia),
+    personal_min_turno_noche: Number(form.personalMinTurnoNoche),
+    personal_min_fin_semana_festivo: Number(form.personalMinFinSemanaFestivo),
+    descanso_min_horas: Number(form.descansoMinHoras),
+    cargos_turno: form.cargosTurno,
+    turnos_dia_ideal: Number(form.turnosDiaIdeal),
+    turnos_noche_ideal: Number(form.turnosNocheIdeal),
+    turnos_dia_alterno: Number(form.turnosDiaAlterno),
+    turnos_noche_alterno: Number(form.turnosNocheAlterno),
+    fines_semana_libres_mes: Number(form.finesSemanaLibresMes),
+    updated_at: new Date().toISOString(),
+  };
+  const [row] = await sb(`reglas_turnos?id=eq.${form.id}`, { method: "PATCH", body: JSON.stringify(body) });
+  return mapReglas(row);
+}
+function mapFestivo(row) {
+  return { id: row.id, fecha: row.fecha, nombre: row.nombre };
+}
+async function fetchFestivos() {
+  const rows = await sb("festivos?select=*&order=fecha");
+  return rows.map(mapFestivo);
+}
+async function insertFestivoRemote(form) {
+  const [row] = await sb("festivos", { method: "POST", body: JSON.stringify({ fecha: form.fecha, nombre: form.nombre }) });
+  return mapFestivo(row);
+}
+async function deleteFestivoRemote(id) {
+  await sb(`festivos?id=eq.${id}`, { method: "DELETE", prefer: "return=minimal" });
+}
+
 /* ============================== DATA ============================== */
 const TODAY = (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; })(); // fecha real de hoy
 let PERSONAL_STATE = []; // se llena al cargar desde Supabase; usado por personName/personById
@@ -251,11 +308,12 @@ const NAV = [
 ];
 const TURNO_TYPES = ["turno_dia", "turno_noche"];
 const ACTIVIDAD_TYPES = Object.keys(ACTIVITY_TYPES).filter((k) => !TURNO_TYPES.includes(k));
-// El módulo de Turnos solo programa estos dos cargos.
-const TURNO_CARGOS = ["operador terapéutico", "auxiliar de enfermería"];
-function esCargoDeTurno(cargo) {
+// Valores por defecto si aún no cargaron las reglas desde Supabase.
+const TURNO_CARGOS_DEFAULT = ["operador terapéutico", "auxiliar de enfermería"];
+function esCargoDeTurno(cargo, cargosTurno) {
   const c = (cargo || "").toLowerCase();
-  return TURNO_CARGOS.some((t) => c.includes(t));
+  const lista = (cargosTurno && cargosTurno.length ? cargosTurno : TURNO_CARGOS_DEFAULT).map((x) => x.toLowerCase());
+  return lista.some((t) => c.includes(t));
 }
 
 /* ============================== HELPERS ============================== */
@@ -318,6 +376,8 @@ export default function EvolucionaApp() {
   const [events, setEvents] = useState([]);
   const [personal, setPersonal] = useState([]);
   const [biblioteca, setBiblioteca] = useState([]);
+  const [reglas, setReglas] = useState(null);
+  const [festivos, setFestivos] = useState([]);
   const [weekOffset, setWeekOffset] = useState(0);
   const [calMode, setCalMode] = useState("semana");
   const [monthOffset, setMonthOffset] = useState(0);
@@ -325,6 +385,7 @@ export default function EvolucionaApp() {
   const [detail, setDetail] = useState(null); // event being viewed
   const [personalModal, setPersonalModal] = useState(null); // {mode, person}
   const [bibModal, setBibModal] = useState(null); // {mode, item}
+  const [festivoModal, setFestivoModal] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState(null);
@@ -345,6 +406,8 @@ export default function EvolucionaApp() {
       setPersonal(data.personal);
       setEvents(data.events);
       setBiblioteca(data.biblioteca);
+      setReglas(data.reglas);
+      setFestivos(data.festivos);
     } catch (err) {
       setLoadError(err.message || "No se pudo conectar a Supabase.");
     } finally {
@@ -460,6 +523,40 @@ export default function EvolucionaApp() {
       showToast(`No se pudo eliminar: ${err.message}`, "warn");
     }
   }
+  async function saveReglas(form) {
+    setSaving(true);
+    try {
+      const saved = await updateReglasRemote(form);
+      setReglas(saved);
+      showToast("Reglas actualizadas");
+    } catch (err) {
+      showToast(`No se pudo guardar: ${err.message}`, "warn");
+    } finally {
+      setSaving(false);
+    }
+  }
+  async function addFestivo(form) {
+    setSaving(true);
+    try {
+      const saved = await insertFestivoRemote(form);
+      setFestivos((prev) => [...prev, saved].sort((a, b) => a.fecha.localeCompare(b.fecha)));
+      setFestivoModal(false);
+      showToast("Festivo agregado");
+    } catch (err) {
+      showToast(`No se pudo guardar: ${err.message}`, "warn");
+    } finally {
+      setSaving(false);
+    }
+  }
+  async function deleteFestivo(id) {
+    try {
+      await deleteFestivoRemote(id);
+      setFestivos((prev) => prev.filter((f) => f.id !== id));
+      showToast("Festivo eliminado", "warn");
+    } catch (err) {
+      showToast(`No se pudo eliminar: ${err.message}`, "warn");
+    }
+  }
 
   const ctx = {
     events, setEvents, personal, setPersonal, biblioteca, weekStart, weekDays, weekOffset, setWeekOffset,
@@ -467,6 +564,7 @@ export default function EvolucionaApp() {
     toggleEstado, showToast, setView, saving, isMaestro, session,
     personalModal, setPersonalModal, savePersonal, deletePersonal,
     bibModal, setBibModal, saveBiblioteca, deleteBiblioteca,
+    reglas, saveReglas, festivos, addFestivo, deleteFestivo, festivoModal, setFestivoModal,
   };
 
   if (loading) {
@@ -884,10 +982,21 @@ function ActividadesCalendario({ ctx }) {
 
 /* ============================== TURNOS (calendario) ============================== */
 function TurnosCalendario({ ctx }) {
-  const { isMaestro, events, personal, monthOffset, setMonthOffset, setDetail } = ctx;
+  const { isMaestro, events, personal, monthOffset, setMonthOffset, setDetail, reglas, festivos } = ctx;
   const turnos = events.filter((e) => TURNO_TYPES.includes(e.type));
+  const festivoSet = new Set((festivos || []).map((f) => f.fecha));
 
-  const elegibles = personal.filter((p) => esCargoDeTurno(p.cargo));
+  function esFinDeSemanaOFestivo(dISO) {
+    const dow = new Date(`${dISO}T00:00:00`).getDay();
+    return dow === 0 || dow === 6 || festivoSet.has(dISO);
+  }
+  function minRequerido(dISO, tipo) {
+    if (!reglas) return tipo === "turno_noche" ? 2 : 1;
+    const base = tipo === "turno_noche" ? reglas.personalMinTurnoNoche : reglas.personalMinTurnoDia;
+    return esFinDeSemanaOFestivo(dISO) ? Math.max(base, reglas.personalMinFinSemanaFestivo) : base;
+  }
+
+  const elegibles = personal.filter((p) => esCargoDeTurno(p.cargo, reglas?.cargosTurno));
   const baseParaResumen = elegibles.length > 0 ? elegibles : personal;
   const porPersona = baseParaResumen.map((p) => {
     const suyos = turnos.filter((t) => t.personalId === p.id);
@@ -911,7 +1020,7 @@ function TurnosCalendario({ ctx }) {
       <ReadOnlyBanner isMaestro={isMaestro} />
       {elegibles.length === 0 && (
         <div className="flex items-center gap-2 px-3.5 py-2.5 rounded-lg text-[12.5px]" style={{ background: T.accentSoft, color: "#8A5A17" }}>
-          <AlertTriangle size={14} /> Ningún colaborador tiene el cargo "Operador terapéutico" o "Auxiliar de enfermería" — edítalos en Personal para que aparezcan aquí.
+          <AlertTriangle size={14} /> Ningún colaborador tiene alguno de los cargos configurados para turnos — revísalos en Configuración o edítalos en Personal.
         </div>
       )}
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -946,21 +1055,28 @@ function TurnosCalendario({ ctx }) {
             const inMonth = d.getMonth() === base.getMonth();
             const dia = chipsFor(dISO, "turno_dia");
             const noche = chipsFor(dISO, "turno_noche");
+            const festivoNombre = festivoSet.has(dISO) ? festivos.find((f) => f.fecha === dISO)?.nombre : null;
             return (
               <div
                 key={i}
                 onClick={() => isMaestro && ctx.setModal({ mode: "new", event: null, defaultType: "turno_dia", prefill: { date: dISO, start: 7, end: 17 } })}
                 className={`border-b border-r p-1.5 flex flex-col gap-1 min-h-[112px] ${isMaestro ? "cursor-pointer hover:bg-black/[0.02]" : ""}`}
-                style={{ borderColor: T.border, opacity: inMonth ? 1 : 0.4 }}
+                style={{ borderColor: T.border, opacity: inMonth ? 1 : 0.4, background: festivoNombre ? T.accentSoft : "transparent" }}
+                title={festivoNombre || undefined}
               >
                 <span className="ev-display text-[11.5px] font-semibold w-5 h-5 flex items-center justify-center rounded-full shrink-0" style={{ background: dISO === todayISO ? T.primary : "transparent", color: dISO === todayISO ? "#fff" : T.ink }}>
                   {d.getDate()}
                 </span>
-                <TurnoMiniBox tipo="turno_dia" chips={dia} onChipClick={setDetail} />
-                <TurnoMiniBox tipo="turno_noche" chips={noche} onChipClick={setDetail} />
+                <TurnoMiniBox tipo="turno_dia" chips={dia} onChipClick={setDetail} min={minRequerido(dISO, "turno_dia")} />
+                <TurnoMiniBox tipo="turno_noche" chips={noche} onChipClick={setDetail} min={minRequerido(dISO, "turno_noche")} />
               </div>
             );
           })}
+        </div>
+        <div className="flex items-center gap-2 px-4 py-2 text-[11px] border-t" style={{ borderColor: T.border, color: T.muted }}>
+          <span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ background: T.accentSoft }} /> Día festivo
+          <span className="mx-1">·</span>
+          <AlertTriangle size={11} style={{ color: T.danger }} /> No alcanza el mínimo de personal configurado
         </div>
       </div>
 
@@ -987,11 +1103,15 @@ function TurnosCalendario({ ctx }) {
   );
 }
 
-function TurnoMiniBox({ tipo, chips, onChipClick }) {
+function TurnoMiniBox({ tipo, chips, onChipClick, min }) {
   const color = ACTIVITY_TYPES[tipo].color;
+  const falta = typeof min === "number" && chips.length < min;
   return (
-    <div className="rounded px-1 py-0.5" style={{ background: `${color}14` }}>
-      <p className="text-[8.5px] font-semibold uppercase tracking-wide" style={{ color }}>{tipo === "turno_dia" ? "Día" : "Noche"}</p>
+    <div className="rounded px-1 py-0.5" style={{ background: `${color}14`, outline: falta ? `1px solid ${T.danger}` : "none" }}>
+      <p className="text-[8.5px] font-semibold uppercase tracking-wide flex items-center gap-1" style={{ color }}>
+        {tipo === "turno_dia" ? "Día" : "Noche"}
+        {falta && <AlertTriangle size={9} style={{ color: T.danger }} />}
+      </p>
       {chips.length === 0 && <p className="text-[9px]" style={{ color: T.muted }}>—</p>}
       {chips.map((c) => (
         <button
@@ -1004,6 +1124,7 @@ function TurnoMiniBox({ tipo, chips, onChipClick }) {
           {personName(c.personalId)} <span className="ev-mono" style={{ color: T.muted }}>{horasEfectivas(c)}h</span>
         </button>
       ))}
+      {falta && <p className="text-[8px]" style={{ color: T.danger }}>Faltan {min - chips.length}</p>}
     </div>
   );
 }
@@ -1298,37 +1419,138 @@ function Reportes({ ctx }) {
 }
 
 /* ============================== CONFIGURACIÓN ============================== */
-function Configuracion() {
-  const [prefs, setPrefs] = useState({ notificaciones: true, recordatorios: true, semanaInicioLunes: true });
-  const toggle = (k) => setPrefs((p) => ({ ...p, [k]: !p[k] }));
-  const items = [
-    { key: "notificaciones", label: "Notificaciones de alertas de turnos", desc: "Recibir avisos cuando un turno quede sin responsable" },
-    { key: "recordatorios", label: "Recordatorios de actividades", desc: "Aviso 30 minutos antes de cada actividad programada" },
-    { key: "semanaInicioLunes", label: "La semana inicia en lunes", desc: "Afecta la vista de calendario semanal y mensual" },
-  ];
+function Configuracion({ ctx }) {
+  const { reglas, saveReglas, isMaestro, saving, festivos, festivoModal, setFestivoModal, addFestivo, deleteFestivo } = ctx;
+  const [form, setForm] = useState(null);
+
+  React.useEffect(() => {
+    if (reglas && !form) setForm({ ...reglas, cargosTexto: reglas.cargosTurno.join(", ") });
+  }, [reglas]);
+
+  if (!reglas || !form) {
+    return <p className="text-[13px]" style={{ color: T.muted }}>No hay reglas configuradas todavía. Corre la migración de reglas de turnos en Supabase.</p>;
+  }
+
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+  const numField = (key, label, hint) => (
+    <Field label={label}>
+      <input type="number" min={0} value={form[key]} disabled={!isMaestro} onChange={(e) => set(key, e.target.value)} style={{ ...inputStyle, opacity: isMaestro ? 1 : 0.7 }} />
+      {hint && <span className="text-[11px]" style={{ color: T.muted }}>{hint}</span>}
+    </Field>
+  );
+
   return (
-    <div className="ev-card p-2 max-w-xl">
-      {items.map((it, i) => (
-        <div key={it.key} className="flex items-center justify-between px-4 py-4" style={{ borderTop: i ? `1px solid ${T.border}` : "none" }}>
-          <div className="pr-4">
-            <p className="font-medium text-[13.5px]">{it.label}</p>
-            <p className="text-[12px]" style={{ color: T.muted }}>{it.desc}</p>
-          </div>
-          <button onClick={() => toggle(it.key)} className="w-10 h-6 rounded-full relative shrink-0" style={{ background: prefs[it.key] ? T.primary : T.border }}>
-            <span className="absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all" style={{ left: prefs[it.key] ? 18 : 2 }} />
+    <div className="flex flex-col gap-5 max-w-2xl">
+      {!isMaestro && (
+        <div className="flex items-center gap-2 px-3.5 py-2.5 rounded-lg text-[12.5px]" style={{ background: T.accentSoft, color: "#8A5A17" }}>
+          <Lock size={14} /> Modo lectura: solo un usuario Maestro puede cambiar estas reglas.
+        </div>
+      )}
+
+      <div className="ev-card p-5">
+        <h3 className="ev-display font-semibold text-[15px] mb-1">Reglas obligatorias</h3>
+        <p className="text-[12px] mb-4" style={{ color: T.muted }}>Nunca se pueden incumplir al programar turnos.</p>
+        <div className="grid sm:grid-cols-2 gap-3.5">
+          {numField("horasSemanaObjetivo", "Horas máximas por semana")}
+          {numField("descansoMinHoras", "Descanso mínimo entre turnos (h)")}
+          {numField("personalMinTurnoDia", "Personas mínimas · turno día")}
+          {numField("personalMinTurnoNoche", "Personas mínimas · turno noche")}
+          {numField("personalMinFinSemanaFestivo", "Personas mínimas · fin de semana/festivo")}
+        </div>
+        <div className="mt-3.5">
+          <Field label="Cargos habilitados para turnos (separados por coma)">
+            <input value={form.cargosTexto} disabled={!isMaestro} onChange={(e) => set("cargosTexto", e.target.value)} style={{ ...inputStyle, opacity: isMaestro ? 1 : 0.7 }} />
+          </Field>
+        </div>
+      </div>
+
+      <div className="ev-card p-5">
+        <h3 className="ev-display font-semibold text-[15px] mb-1">Preferencias</h3>
+        <p className="text-[12px] mb-4" style={{ color: T.muted }}>Se intentan cumplir, pero pueden relajarse si no alcanza.</p>
+        <div className="grid sm:grid-cols-2 gap-3.5">
+          {numField("turnosDiaIdeal", "Turnos día ideales / semana")}
+          {numField("turnosNocheIdeal", "Turnos noche ideales / semana")}
+          {numField("turnosDiaAlterno", "Turnos día · patrón alterno")}
+          {numField("turnosNocheAlterno", "Turnos noche · patrón alterno")}
+          {numField("finesSemanaLibresMes", "Fines de semana libres al mes")}
+        </div>
+      </div>
+
+      {isMaestro && (
+        <div>
+          <button
+            onClick={() => saveReglas({ ...form, cargosTurno: form.cargosTexto.split(",").map((s) => s.trim()).filter(Boolean) })}
+            disabled={saving}
+            className="ev-btn px-4 py-2 text-[13px] text-white disabled:opacity-50"
+            style={{ background: T.primary }}
+          >
+            {saving ? "Guardando…" : "Guardar reglas"}
           </button>
         </div>
-      ))}
-      <div className="px-4 pb-4 pt-1">
-        <p className="text-[11.5px]" style={{ color: T.muted }}>Más ajustes (roles, permisos, integraciones) llegarán con la conexión a Supabase.</p>
+      )}
+
+      <div className="ev-card overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderColor: T.border }}>
+          <h3 className="ev-display font-semibold text-[15px]">Festivos</h3>
+          {isMaestro && (
+            <button onClick={() => setFestivoModal(true)} className="ev-btn px-3 py-1.5 text-[12px] text-white" style={{ background: T.primary }}>
+              <Plus size={13} /> Agregar
+            </button>
+          )}
+        </div>
+        <div className="divide-y max-h-72 overflow-y-auto ev-scroll" style={{ borderColor: T.border }}>
+          {festivos.map((f) => (
+            <div key={f.id} className="flex items-center justify-between px-5 py-2.5 text-[13px]">
+              <span>{new Date(`${f.fecha}T00:00:00`).toLocaleDateString("es-CO", { day: "numeric", month: "long", year: "numeric" })} — {f.nombre}</span>
+              {isMaestro && (
+                <button onClick={() => deleteFestivo(f.id)} className="ev-btn text-[11.5px] px-2 py-1" style={{ background: T.dangerSoft, color: T.danger }}>
+                  <Trash2 size={11} />
+                </button>
+              )}
+            </div>
+          ))}
+          {festivos.length === 0 && <p className="px-5 py-6 text-[12.5px] text-center" style={{ color: T.muted }}>No hay festivos registrados.</p>}
+        </div>
+      </div>
+
+      {festivoModal && <FestivoModal ctx={ctx} onClose={() => setFestivoModal(false)} />}
+    </div>
+  );
+}
+
+function FestivoModal({ ctx, onClose }) {
+  const { addFestivo, saving } = ctx;
+  const [form, setForm] = useState({ fecha: toISO(TODAY), nombre: "" });
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="ev-card w-full max-w-sm p-5">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="ev-display font-semibold text-[16px]">Nuevo festivo</h3>
+          <button onClick={onClose}><X size={18} /></button>
+        </div>
+        <div className="flex flex-col gap-3.5">
+          <Field label="Fecha">
+            <input type="date" value={form.fecha} onChange={(e) => setForm((f) => ({ ...f, fecha: e.target.value }))} style={inputStyle} />
+          </Field>
+          <Field label="Nombre">
+            <input value={form.nombre} onChange={(e) => setForm((f) => ({ ...f, nombre: e.target.value }))} placeholder="Ej. Día de la Independencia" style={inputStyle} />
+          </Field>
+        </div>
+        <div className="flex justify-end gap-2 mt-5">
+          <button onClick={onClose} className="ev-btn px-4 py-2 text-[13px]" style={{ border: `1px solid ${T.border}` }}>Cancelar</button>
+          <button onClick={() => addFestivo(form)} disabled={!form.nombre || saving} className="ev-btn px-4 py-2 text-[13px] text-white disabled:opacity-40" style={{ background: T.primary }}>
+            {saving ? "Guardando…" : "Guardar"}
+          </button>
+        </div>
       </div>
     </div>
   );
 }
 
+
 /* ============================== MODAL: NUEVA/EDITAR ACTIVIDAD ============================== */
 function EventModal({ ctx, onClose, onSave, initial }) {
-  const { personal, saving, biblioteca } = ctx;
+  const { personal, saving, biblioteca, reglas } = ctx;
   const base = initial.event || {};
   const pre = initial.prefill || {};
   const allowedTypes = base.type
@@ -1349,7 +1571,7 @@ function EventModal({ ctx, onClose, onSave, initial }) {
   const selected = personById(form.personalId);
   const esTurno = form.type.startsWith("turno_");
   const esTurnoNuevo = esTurno && initial.mode !== "edit";
-  const elegibles = personal.filter((p) => esCargoDeTurno(p.cargo));
+  const elegibles = personal.filter((p) => esCargoDeTurno(p.cargo, reglas?.cargosTurno));
   const opcionesTurno = elegibles.length > 0 ? elegibles : personal;
 
   function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
