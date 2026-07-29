@@ -557,6 +557,21 @@ export default function EvolucionaApp() {
       showToast(`No se pudo eliminar: ${err.message}`, "warn");
     }
   }
+  async function confirmarPropuestaTurnos(propuestas) {
+    setSaving(true);
+    try {
+      for (const p of propuestas) {
+        await insertEventRemote(p);
+      }
+      setEvents(await fetchEventsRemote());
+      showToast(`${propuestas.length} turno(s) guardado(s) en Supabase`);
+    } catch (err) {
+      showToast(`Se guardó parcialmente: ${err.message}`, "warn");
+      setEvents(await fetchEventsRemote());
+    } finally {
+      setSaving(false);
+    }
+  }
 
   const ctx = {
     events, setEvents, personal, setPersonal, biblioteca, weekStart, weekDays, weekOffset, setWeekOffset,
@@ -565,6 +580,7 @@ export default function EvolucionaApp() {
     personalModal, setPersonalModal, savePersonal, deletePersonal,
     bibModal, setBibModal, saveBiblioteca, deleteBiblioteca,
     reglas, saveReglas, festivos, addFestivo, deleteFestivo, festivoModal, setFestivoModal,
+    confirmarPropuestaTurnos,
   };
 
   if (loading) {
@@ -980,23 +996,96 @@ function ActividadesCalendario({ ctx }) {
   );
 }
 
+function esFinDeSemanaOFestivo(dISO, festivoSet) {
+  const dow = new Date(`${dISO}T00:00:00`).getDay();
+  return dow === 0 || dow === 6 || festivoSet.has(dISO);
+}
+function minRequeridoTurno(dISO, tipo, reglas, festivoSet) {
+  if (!reglas) return tipo === "turno_noche" ? 2 : 1;
+  const base = tipo === "turno_noche" ? reglas.personalMinTurnoNoche : reglas.personalMinTurnoDia;
+  return esFinDeSemanaOFestivo(dISO, festivoSet) ? Math.max(base, reglas.personalMinFinSemanaFestivo) : base;
+}
+
+/* ============================== MOTOR DE GENERACIÓN AUTOMÁTICA (borrador) ============================== */
+// Heurística: recorre día por día, cubre primero lo obligatorio (mínimos de
+// personal, cargo válido, tope de horas semanales, descanso mínimo), y entre
+// los candidatos válidos prioriza a quien lleve menos turnos de ese tipo y
+// menos horas acumuladas en la semana (reparto justo). No guarda nada por sí
+// sola: devuelve una propuesta para que el Maestro la revise y confirme.
+function generarPropuestaTurnos({ personal, eventosExistentes, reglas, festivos, fechaInicioISO, semanas }) {
+  const festivoSet = new Set((festivos || []).map((f) => f.fecha));
+  const elegibles = personal.filter((p) => p.estado === "activo" && esCargoDeTurno(p.cargo, reglas?.cargosTurno));
+  const inicio = getMonday(new Date(`${fechaInicioISO}T00:00:00`));
+  const totalDias = semanas * 7;
+  const dias = Array.from({ length: totalDias }, (_, i) => addDays(inicio, i));
+
+  const propuestas = [];
+  const faltantes = [];
+  const asignadoHoy = {}; // dISO -> Set(personalId)
+  const nocheAyer = {}; // dISO -> Set(personalId) que salieron de turno noche esa madrugada
+
+  for (let semanaIdx = 0; semanaIdx < semanas; semanaIdx++) {
+    const diasSemana = dias.slice(semanaIdx * 7, semanaIdx * 7 + 7);
+    // Contadores por persona, reiniciados cada semana (el objetivo es semanal)
+    const conteo = {};
+    elegibles.forEach((p) => { conteo[p.id] = { turno_dia: 0, turno_noche: 0, horas: 0 }; });
+    // Semillar con lo que ya existe en Supabase para esa semana (manual o de una corrida previa)
+    diasSemana.forEach((d) => {
+      const dISO = toISO(d);
+      eventosExistentes.filter((e) => e.date === dISO && TURNO_TYPES.includes(e.type) && e.personalId && conteo[e.personalId]).forEach((e) => {
+        conteo[e.personalId][e.type] += 1;
+        conteo[e.personalId].horas += horasEfectivas(e);
+        (asignadoHoy[dISO] ||= new Set()).add(e.personalId);
+      });
+    });
+
+    diasSemana.forEach((d, diaIdx) => {
+      const dISO = toISO(d);
+      const diaAnteriorISO = diaIdx > 0 ? toISO(diasSemana[diaIdx - 1]) : toISO(addDays(d, -1));
+      ["turno_dia", "turno_noche"].forEach((tipo) => {
+        const yaExiste = eventosExistentes.some((e) => e.date === dISO && e.type === tipo);
+        if (yaExiste) return; // no se toca lo que ya está manualmente cubierto
+        const requerido = minRequeridoTurno(dISO, tipo, reglas, festivoSet);
+        const start = tipo === "turno_dia" ? 7 : 17;
+        const end = tipo === "turno_dia" ? 17 : 31;
+
+        const candidatos = elegibles
+          .filter((p) => !(asignadoHoy[dISO]?.has(p.id))) // no dos turnos el mismo día
+          .filter((p) => !(tipo === "turno_dia" && nocheAyer[diaAnteriorISO]?.has(p.id))) // descanso tras turno noche
+          .filter((p) => conteo[p.id].horas + horasEfectivas({ type: tipo, start, end }) <= reglas.horasSemanaObjetivo)
+          .sort((a, b) => {
+            const ca = conteo[a.id], cb = conteo[b.id];
+            if (ca[tipo] !== cb[tipo]) return ca[tipo] - cb[tipo];
+            return ca.horas - cb.horas;
+          });
+
+        const elegidos = candidatos.slice(0, requerido);
+        elegidos.forEach((p) => {
+          const ev = { id: nid(), date: dISO, type: tipo, personalId: p.id, start, end, title: tipo === "turno_dia" ? "Turno Día" : "Turno Noche" };
+          propuestas.push(ev);
+          conteo[p.id][tipo] += 1;
+          conteo[p.id].horas += horasEfectivas(ev);
+          (asignadoHoy[dISO] ||= new Set()).add(p.id);
+          if (tipo === "turno_noche") (nocheAyer[dISO] ||= new Set()).add(p.id);
+        });
+        if (elegidos.length < requerido) {
+          faltantes.push({ date: dISO, type: tipo, faltan: requerido - elegidos.length });
+        }
+      });
+    });
+  }
+
+  return { propuestas, faltantes, elegiblesCount: elegibles.length };
+}
+
 /* ============================== TURNOS (calendario) ============================== */
 function TurnosCalendario({ ctx }) {
   const { isMaestro, events, personal, monthOffset, setMonthOffset, setDetail, reglas, festivos } = ctx;
   const turnos = events.filter((e) => TURNO_TYPES.includes(e.type));
   const festivoSet = new Set((festivos || []).map((f) => f.fecha));
-
-  function esFinDeSemanaOFestivo(dISO) {
-    const dow = new Date(`${dISO}T00:00:00`).getDay();
-    return dow === 0 || dow === 6 || festivoSet.has(dISO);
-  }
-  function minRequerido(dISO, tipo) {
-    if (!reglas) return tipo === "turno_noche" ? 2 : 1;
-    const base = tipo === "turno_noche" ? reglas.personalMinTurnoNoche : reglas.personalMinTurnoDia;
-    return esFinDeSemanaOFestivo(dISO) ? Math.max(base, reglas.personalMinFinSemanaFestivo) : base;
-  }
-
   const elegibles = personal.filter((p) => esCargoDeTurno(p.cargo, reglas?.cargosTurno));
+  const [generarOpen, setGenerarOpen] = useState(false);
+
   const baseParaResumen = elegibles.length > 0 ? elegibles : personal;
   const porPersona = baseParaResumen.map((p) => {
     const suyos = turnos.filter((t) => t.personalId === p.id);
@@ -1026,15 +1115,25 @@ function TurnosCalendario({ ctx }) {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <Legend types={TURNO_TYPES} />
         {isMaestro && (
-          <button
-            onClick={() => ctx.setModal({ mode: "new", event: null, defaultType: "turno_dia" })}
-            className="ev-btn px-3.5 py-2 text-[12.5px] text-white"
-            style={{ background: T.primary }}
-          >
-            <Plus size={14} /> Nuevo turno
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setGenerarOpen(true)}
+              className="ev-btn px-3.5 py-2 text-[12.5px]"
+              style={{ border: `1px solid ${T.primary}`, color: T.primary }}
+            >
+              <Sparkles size={14} /> Generar automáticamente
+            </button>
+            <button
+              onClick={() => ctx.setModal({ mode: "new", event: null, defaultType: "turno_dia" })}
+              className="ev-btn px-3.5 py-2 text-[12.5px] text-white"
+              style={{ background: T.primary }}
+            >
+              <Plus size={14} /> Nuevo turno
+            </button>
+          </div>
         )}
       </div>
+      {generarOpen && <GenerarTurnosModal ctx={ctx} onClose={() => setGenerarOpen(false)} />}
 
       <div className="ev-card overflow-hidden">
         <div className="flex items-center justify-between px-4 py-3 border-b" style={{ borderColor: T.border }}>
@@ -1067,8 +1166,8 @@ function TurnosCalendario({ ctx }) {
                 <span className="ev-display text-[11.5px] font-semibold w-5 h-5 flex items-center justify-center rounded-full shrink-0" style={{ background: dISO === todayISO ? T.primary : "transparent", color: dISO === todayISO ? "#fff" : T.ink }}>
                   {d.getDate()}
                 </span>
-                <TurnoMiniBox tipo="turno_dia" chips={dia} onChipClick={setDetail} min={minRequerido(dISO, "turno_dia")} />
-                <TurnoMiniBox tipo="turno_noche" chips={noche} onChipClick={setDetail} min={minRequerido(dISO, "turno_noche")} />
+                <TurnoMiniBox tipo="turno_dia" chips={dia} onChipClick={setDetail} min={minRequeridoTurno(dISO, "turno_dia", reglas, festivoSet)} />
+                <TurnoMiniBox tipo="turno_noche" chips={noche} onChipClick={setDetail} min={minRequeridoTurno(dISO, "turno_noche", reglas, festivoSet)} />
               </div>
             );
           })}
@@ -1125,6 +1224,125 @@ function TurnoMiniBox({ tipo, chips, onChipClick, min }) {
         </button>
       ))}
       {falta && <p className="text-[8px]" style={{ color: T.danger }}>Faltan {min - chips.length}</p>}
+    </div>
+  );
+}
+
+/* ============================== MODAL: GENERAR TURNOS AUTOMÁTICAMENTE ============================== */
+function GenerarTurnosModal({ ctx, onClose }) {
+  const { personal, events, reglas, festivos, saving, confirmarPropuestaTurnos, showToast } = ctx;
+  const [fechaInicio, setFechaInicio] = useState(toISO(getMonday(TODAY)));
+  const [semanas, setSemanas] = useState(1);
+  const [resultado, setResultado] = useState(null); // { propuestas, faltantes, elegiblesCount }
+  const [excluidos, setExcluidos] = useState(new Set());
+
+  function generar() {
+    const r = generarPropuestaTurnos({ personal, eventosExistentes: events, reglas, festivos, fechaInicioISO: fechaInicio, semanas: Number(semanas) });
+    setResultado(r);
+    setExcluidos(new Set());
+  }
+
+  function toggleExcluir(id) {
+    setExcluidos((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+
+  async function confirmar() {
+    const finales = resultado.propuestas.filter((p) => !excluidos.has(p.id));
+    if (finales.length === 0) { showToast("No hay turnos para guardar", "warn"); return; }
+    await confirmarPropuestaTurnos(finales);
+    onClose();
+  }
+
+  const porDia = {};
+  (resultado?.propuestas || []).forEach((p) => { (porDia[p.date] ||= []).push(p); });
+  const fechasOrdenadas = Object.keys(porDia).sort();
+  const totalIncluidos = (resultado?.propuestas || []).filter((p) => !excluidos.has(p.id)).length;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="ev-card w-full max-w-lg p-5 max-h-[90vh] overflow-y-auto ev-scroll">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="ev-display font-semibold text-[16px] flex items-center gap-2">
+            <Sparkles size={16} style={{ color: T.primary }} /> Generar turnos automáticamente
+          </h3>
+          <button onClick={onClose}><X size={18} /></button>
+        </div>
+
+        {!resultado && (
+          <>
+            {!reglas && (
+              <p className="text-[12.5px] mb-4 px-3 py-2 rounded-lg" style={{ background: T.dangerSoft, color: T.danger }}>
+                No hay reglas configuradas. Ve a Configuración y corre primero la migración de reglas de turnos.
+              </p>
+            )}
+            <p className="text-[12.5px] mb-4" style={{ color: T.muted }}>
+              Se completan solo los días y turnos que hoy están vacíos — nada de lo ya asignado manualmente se toca. Usa las reglas definidas en Configuración.
+            </p>
+            <div className="grid grid-cols-2 gap-3 mb-4">
+              <Field label="Semana de inicio (lunes)">
+                <input type="date" value={fechaInicio} onChange={(e) => setFechaInicio(toISO(getMonday(new Date(`${e.target.value}T00:00:00`))))} style={inputStyle} />
+              </Field>
+              <Field label="Cuántas semanas">
+                <select value={semanas} onChange={(e) => setSemanas(e.target.value)} style={inputStyle}>
+                  {[1, 2, 3, 4].map((n) => <option key={n} value={n}>{n} semana{n > 1 ? "s" : ""}</option>)}
+                </select>
+              </Field>
+            </div>
+            <button onClick={generar} disabled={!reglas} className="ev-btn w-full justify-center px-4 py-2.5 text-[13px] text-white disabled:opacity-40" style={{ background: T.primary }}>
+              Generar propuesta
+            </button>
+          </>
+        )}
+
+        {resultado && (
+          <>
+            {resultado.elegiblesCount === 0 && (
+              <p className="text-[12.5px] mb-3 px-3 py-2 rounded-lg" style={{ background: T.dangerSoft, color: T.danger }}>
+                No hay colaboradores activos con los cargos configurados para turnos.
+              </p>
+            )}
+            {resultado.faltantes.length > 0 && (
+              <div className="mb-3 px-3 py-2.5 rounded-lg text-[12px]" style={{ background: T.accentSoft, color: "#8A5A17" }}>
+                <p className="font-semibold mb-1">No alcanzó el personal para {resultado.faltantes.length} turno(s):</p>
+                {resultado.faltantes.slice(0, 6).map((f, i) => (
+                  <p key={i}>{new Date(`${f.date}T00:00:00`).toLocaleDateString("es-CO", { weekday: "short", day: "numeric", month: "short" })} · {ACTIVITY_TYPES[f.type].label} · faltan {f.faltan}</p>
+                ))}
+                {resultado.faltantes.length > 6 && <p>y {resultado.faltantes.length - 6} más…</p>}
+              </div>
+            )}
+            <p className="text-[12px] mb-2" style={{ color: T.muted }}>
+              Destilda los que no quieras guardar. Se van a crear <strong style={{ color: T.ink }}>{totalIncluidos}</strong> turno(s).
+            </p>
+            <div className="flex flex-col gap-3 max-h-80 overflow-y-auto ev-scroll">
+              {fechasOrdenadas.map((dISO) => (
+                <div key={dISO}>
+                  <p className="text-[11.5px] font-semibold mb-1 capitalize" style={{ color: T.muted }}>
+                    {new Date(`${dISO}T00:00:00`).toLocaleDateString("es-CO", { weekday: "long", day: "numeric", month: "long" })}
+                  </p>
+                  {porDia[dISO].map((p) => (
+                    <label key={p.id} className="flex items-center gap-2 text-[12.5px] py-1">
+                      <input type="checkbox" checked={!excluidos.has(p.id)} onChange={() => toggleExcluir(p.id)} />
+                      <span className="w-2 h-2 rounded-full shrink-0" style={{ background: ACTIVITY_TYPES[p.type].color }} />
+                      {p.title} — {personName(p.personalId)}
+                    </label>
+                  ))}
+                </div>
+              ))}
+              {fechasOrdenadas.length === 0 && <p className="text-[12.5px] text-center py-4" style={{ color: T.muted }}>Todos los turnos de este rango ya están cubiertos.</p>}
+            </div>
+            <div className="flex justify-end gap-2 mt-5">
+              <button onClick={() => setResultado(null)} className="ev-btn px-4 py-2 text-[13px]" style={{ border: `1px solid ${T.border}` }}>Volver</button>
+              <button onClick={confirmar} disabled={saving || totalIncluidos === 0} className="ev-btn px-4 py-2 text-[13px] text-white disabled:opacity-40" style={{ background: T.primary }}>
+                {saving ? "Guardando…" : `Confirmar y guardar (${totalIncluidos})`}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }
