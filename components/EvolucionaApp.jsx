@@ -617,7 +617,19 @@ function LoginScreen({ onLogin }) {
       } else {
         const res = await authSignIn(form.correo, form.password);
         ACCESS_TOKEN = res.access_token;
-        const propio = await fetchOwnUsuario();
+        let propio = await fetchOwnUsuario();
+        if (!propio) {
+          // Pasa cuando el registro exigió confirmar el correo: la fila en
+          // "usuarios" no se pudo crear en ese momento porque aún no había
+          // sesión activa. La creamos ahora, en el primer inicio de sesión real.
+          try {
+            await sb("usuarios", {
+              method: "POST",
+              body: JSON.stringify({ id: res.user?.id, nombre: form.correo, correo: form.correo, rol: "lector" }),
+            });
+          } catch (_) { /* si falla, sigue como lector hasta que un maestro la revise */ }
+          propio = await fetchOwnUsuario();
+        }
         onLogin({ email: form.correo, rol: propio?.rol || "lector" });
       }
     } catch (err) {
