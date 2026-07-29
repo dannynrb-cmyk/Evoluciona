@@ -272,6 +272,13 @@ function fmtHour(h) {
 function fmtRange(s, e) {
   return `${fmtHour(s)} – ${fmtHour(e)}${e > 24 ? " +1" : ""}`;
 }
+// Horas que realmente cuentan para el pago/control: el turno noche
+// tiene 2 horas de descanso, así que sus 14h de reloj cuentan como 12h.
+const DESCANSO_NOCHE = 2;
+function horasEfectivas(e) {
+  const bruto = e.end - e.start;
+  return e.type === "turno_noche" ? bruto - DESCANSO_NOCHE : bruto;
+}
 function personName(id) {
   return PERSONAL_STATE.find((p) => p.id === id)?.nombre || "Sin asignar";
 }
@@ -750,7 +757,7 @@ function Dashboard({ ctx }) {
     .map((p) => {
       const asignadas = events
         .filter((e) => e.personalId === p.id && (e.type === "turno_dia" || e.type === "turno_noche"))
-        .reduce((acc, e) => acc + (e.end - e.start), 0);
+        .reduce((acc, e) => acc + horasEfectivas(e), 0);
       return { nombre: p.nombre.split(" ")[0], Contratadas: p.horas, Asignadas: Math.round(asignadas) };
     });
 
@@ -884,7 +891,7 @@ function TurnosCalendario({ ctx }) {
   const baseParaResumen = elegibles.length > 0 ? elegibles : personal;
   const porPersona = baseParaResumen.map((p) => {
     const suyos = turnos.filter((t) => t.personalId === p.id);
-    const horas = suyos.reduce((a, t) => a + (t.end - t.start), 0);
+    const horas = suyos.reduce((a, t) => a + horasEfectivas(t), 0);
     return { ...p, turnos: suyos.length, horasAsignadas: horas };
   });
 
@@ -992,9 +999,9 @@ function TurnoMiniBox({ tipo, chips, onChipClick }) {
           onClick={(ev) => { ev.stopPropagation(); onChipClick(c); }}
           className="block w-full text-left text-[9.5px] leading-tight truncate hover:underline"
           style={{ color: T.ink }}
-          title={`${personName(c.personalId)} · ${c.end - c.start}h`}
+          title={`${personName(c.personalId)} · ${fmtRange(c.start, c.end)} · ${horasEfectivas(c)}h`}
         >
-          {personName(c.personalId)} <span className="ev-mono" style={{ color: T.muted }}>{c.end - c.start}h</span>
+          {personName(c.personalId)} <span className="ev-mono" style={{ color: T.muted }}>{horasEfectivas(c)}h</span>
         </button>
       ))}
     </div>
@@ -1245,10 +1252,10 @@ function Reportes({ ctx }) {
   const { events, personal, showToast, weekDays } = ctx;
 
   function exportTurnosCSV() {
-    const rows = [["Fecha", "Tipo", "Inicio", "Fin", "Responsable", "Cargo", "Área"]];
+    const rows = [["Fecha", "Tipo", "Inicio", "Fin", "Horas de jornada", "Responsable", "Cargo", "Área"]];
     events.forEach((e) => {
       const p = personById(e.personalId);
-      rows.push([e.date, ACTIVITY_TYPES[e.type].label, fmtHour(e.start), fmtHour(e.end), p?.nombre || "Sin asignar", p?.cargo || "-", p?.area || "-"]);
+      rows.push([e.date, ACTIVITY_TYPES[e.type].label, fmtHour(e.start), fmtHour(e.end), horasEfectivas(e), p?.nombre || "Sin asignar", p?.cargo || "-", p?.area || "-"]);
     });
     download("evoluciona_turnos.csv", rows.map((r) => r.map(csvEscape).join(",")).join("\n"), "text/csv;charset=utf-8;");
     showToast("Excel de turnos descargado (.csv)");
@@ -1332,8 +1339,8 @@ function EventModal({ ctx, onClose, onSave, initial }) {
     title: base.title || "",
     type: base.type || initial.defaultType || allowedTypes[0],
     date: base.date || pre.date || toISO(TODAY),
-    start: base.start ?? pre.start ?? (TURNO_TYPES.includes(base.type || initial.defaultType) ? 7 : 8),
-    end: base.end ?? pre.end ?? (TURNO_TYPES.includes(base.type || initial.defaultType) ? 17 : 9),
+    start: base.start ?? pre.start ?? ((base.type || initial.defaultType) === "turno_noche" ? 17 : TURNO_TYPES.includes(base.type || initial.defaultType) ? 7 : 8),
+    end: base.end ?? pre.end ?? ((base.type || initial.defaultType) === "turno_noche" ? 31 : TURNO_TYPES.includes(base.type || initial.defaultType) ? 17 : 9),
     personalId: base.personalId || "",
     personalIds: [],
     metodologia: base.metodologia || "",
@@ -1388,7 +1395,8 @@ function EventModal({ ctx, onClose, onSave, initial }) {
               onChange={(e) => {
                 const t = e.target.value;
                 set("type", t);
-                if (t.startsWith("turno_")) set("title", ACTIVITY_TYPES[t].label);
+                if (t === "turno_dia") { set("title", ACTIVITY_TYPES[t].label); set("start", 7); set("end", 17); }
+                if (t === "turno_noche") { set("title", ACTIVITY_TYPES[t].label); set("start", 17); set("end", 31); }
               }}
               style={inputStyle}
             >
@@ -1428,6 +1436,11 @@ function EventModal({ ctx, onClose, onSave, initial }) {
               <input type="number" min={0} max={32} value={form.end} onChange={(e) => set("end", parseFloat(e.target.value))} style={inputStyle} />
             </Field>
           </div>
+          {form.type === "turno_noche" && (
+            <p className="text-[11.5px] -mt-2" style={{ color: T.muted }}>
+              El turno queda registrado el día que inicia ({fmtRange(form.start, form.end)}) y termina a las 07:00 del día siguiente. Cuenta como <strong>{horasEfectivas({ type: form.type, start: Number(form.start), end: Number(form.end) })}h</strong> de jornada (se descuentan {DESCANSO_NOCHE}h de descanso de las 14h en reloj).
+            </p>
+          )}
           {!esTurnoNuevo && (
             <div className="grid grid-cols-2 gap-3 text-[12.5px]" style={{ color: T.muted }}>
               <p>Cargo: <span style={{ color: T.ink }}>{selected?.cargo || "—"}</span></p>
