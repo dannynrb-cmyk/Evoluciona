@@ -234,6 +234,9 @@ function mapReglas(row) {
     turnosDiaAlterno: Number(row.turnos_dia_alterno),
     turnosNocheAlterno: Number(row.turnos_noche_alterno),
     finesSemanaLibresMes: Number(row.fines_semana_libres_mes),
+    cargoOperador: row.cargo_operador || "operador terapéutico",
+    cargoAuxiliar: row.cargo_auxiliar || "auxiliar de enfermería",
+    operadorRequiereAuxiliar: row.operador_requiere_auxiliar !== false,
   };
 }
 async function fetchReglas() {
@@ -253,6 +256,9 @@ async function updateReglasRemote(form) {
     turnos_dia_alterno: Number(form.turnosDiaAlterno),
     turnos_noche_alterno: Number(form.turnosNocheAlterno),
     fines_semana_libres_mes: Number(form.finesSemanaLibresMes),
+    cargo_operador: form.cargoOperador,
+    cargo_auxiliar: form.cargoAuxiliar,
+    operador_requiere_auxiliar: !!form.operadorRequiereAuxiliar,
     updated_at: new Date().toISOString(),
   };
   const [row] = await sb(`reglas_turnos?id=eq.${form.id}`, { method: "PATCH", body: JSON.stringify(body) });
@@ -1006,6 +1012,13 @@ function minRequeridoTurno(dISO, tipo, reglas, festivoSet) {
   return esFinDeSemanaOFestivo(dISO, festivoSet) ? Math.max(base, reglas.personalMinFinSemanaFestivo) : base;
 }
 
+function esOperador(cargo, reglas) {
+  return (cargo || "").toLowerCase().includes((reglas?.cargoOperador || "operador terapéutico").toLowerCase());
+}
+function esAuxiliar(cargo, reglas) {
+  return (cargo || "").toLowerCase().includes((reglas?.cargoAuxiliar || "auxiliar de enfermería").toLowerCase());
+}
+
 /* ============================== MOTOR DE GENERACIÓN AUTOMÁTICA (borrador) ============================== */
 // Heurística: recorre día por día, cubre primero lo obligatorio (mínimos de
 // personal, cargo válido, tope de horas semanales, descanso mínimo), y entre
@@ -1059,7 +1072,21 @@ function generarPropuestaTurnos({ personal, eventosExistentes, reglas, festivos,
             return ca.horas - cb.horas;
           });
 
-        const elegidos = candidatos.slice(0, requerido);
+        let elegidos = candidatos.slice(0, requerido);
+
+        if (reglas.operadorRequiereAuxiliar) {
+          const hayOperador = elegidos.some((p) => esOperador(p.cargo, reglas));
+          const hayAuxiliar = elegidos.some((p) => esAuxiliar(p.cargo, reglas));
+          if (hayOperador && !hayAuxiliar) {
+            const refuerzo = candidatos.find((p) => esAuxiliar(p.cargo, reglas) && !elegidos.includes(p));
+            if (refuerzo) {
+              elegidos = [...elegidos, refuerzo];
+            } else {
+              faltantes.push({ date: dISO, type: tipo, faltan: 1, motivo: "sin auxiliar de compañía para el operador" });
+            }
+          }
+        }
+
         elegidos.forEach((p) => {
           const ev = { id: nid(), date: dISO, type: tipo, personalId: p.id, start, end, title: tipo === "turno_dia" ? "Turno Día" : "Turno Noche" };
           propuestas.push(ev);
@@ -1166,8 +1193,8 @@ function TurnosCalendario({ ctx }) {
                 <span className="ev-display text-[11.5px] font-semibold w-5 h-5 flex items-center justify-center rounded-full shrink-0" style={{ background: dISO === todayISO ? T.primary : "transparent", color: dISO === todayISO ? "#fff" : T.ink }}>
                   {d.getDate()}
                 </span>
-                <TurnoMiniBox tipo="turno_dia" chips={dia} onChipClick={setDetail} min={minRequeridoTurno(dISO, "turno_dia", reglas, festivoSet)} />
-                <TurnoMiniBox tipo="turno_noche" chips={noche} onChipClick={setDetail} min={minRequeridoTurno(dISO, "turno_noche", reglas, festivoSet)} />
+                <TurnoMiniBox tipo="turno_dia" chips={dia} onChipClick={setDetail} min={minRequeridoTurno(dISO, "turno_dia", reglas, festivoSet)} reglas={reglas} />
+                <TurnoMiniBox tipo="turno_noche" chips={noche} onChipClick={setDetail} min={minRequeridoTurno(dISO, "turno_noche", reglas, festivoSet)} reglas={reglas} />
               </div>
             );
           })}
@@ -1175,7 +1202,7 @@ function TurnosCalendario({ ctx }) {
         <div className="flex items-center gap-2 px-4 py-2 text-[11px] border-t" style={{ borderColor: T.border, color: T.muted }}>
           <span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ background: T.accentSoft }} /> Día festivo
           <span className="mx-1">·</span>
-          <AlertTriangle size={11} style={{ color: T.danger }} /> No alcanza el mínimo de personal configurado
+          <AlertTriangle size={11} style={{ color: T.danger }} /> Falta personal mínimo o falta acompañamiento (operador sin auxiliar)
         </div>
       </div>
 
@@ -1202,14 +1229,18 @@ function TurnosCalendario({ ctx }) {
   );
 }
 
-function TurnoMiniBox({ tipo, chips, onChipClick, min }) {
+function TurnoMiniBox({ tipo, chips, onChipClick, min, reglas }) {
   const color = ACTIVITY_TYPES[tipo].color;
   const falta = typeof min === "number" && chips.length < min;
+  const personasDelTurno = chips.map((c) => personById(c.personalId)).filter(Boolean);
+  const sinAcompanamiento = reglas?.operadorRequiereAuxiliar
+    && personasDelTurno.some((p) => esOperador(p.cargo, reglas))
+    && !personasDelTurno.some((p) => esAuxiliar(p.cargo, reglas));
   return (
-    <div className="rounded px-1 py-0.5" style={{ background: `${color}14`, outline: falta ? `1px solid ${T.danger}` : "none" }}>
+    <div className="rounded px-1 py-0.5" style={{ background: `${color}14`, outline: (falta || sinAcompanamiento) ? `1px solid ${T.danger}` : "none" }}>
       <p className="text-[8.5px] font-semibold uppercase tracking-wide flex items-center gap-1" style={{ color }}>
         {tipo === "turno_dia" ? "Día" : "Noche"}
-        {falta && <AlertTriangle size={9} style={{ color: T.danger }} />}
+        {(falta || sinAcompanamiento) && <AlertTriangle size={9} style={{ color: T.danger }} />}
       </p>
       {chips.length === 0 && <p className="text-[9px]" style={{ color: T.muted }}>—</p>}
       {chips.map((c) => (
@@ -1224,6 +1255,7 @@ function TurnoMiniBox({ tipo, chips, onChipClick, min }) {
         </button>
       ))}
       {falta && <p className="text-[8px]" style={{ color: T.danger }}>Faltan {min - chips.length}</p>}
+      {!falta && sinAcompanamiento && <p className="text-[8px]" style={{ color: T.danger }}>Sin auxiliar</p>}
     </div>
   );
 }
@@ -1309,7 +1341,7 @@ function GenerarTurnosModal({ ctx, onClose }) {
               <div className="mb-3 px-3 py-2.5 rounded-lg text-[12px]" style={{ background: T.accentSoft, color: "#8A5A17" }}>
                 <p className="font-semibold mb-1">No alcanzó el personal para {resultado.faltantes.length} turno(s):</p>
                 {resultado.faltantes.slice(0, 6).map((f, i) => (
-                  <p key={i}>{new Date(`${f.date}T00:00:00`).toLocaleDateString("es-CO", { weekday: "short", day: "numeric", month: "short" })} · {ACTIVITY_TYPES[f.type].label} · faltan {f.faltan}</p>
+                  <p key={i}>{new Date(`${f.date}T00:00:00`).toLocaleDateString("es-CO", { weekday: "short", day: "numeric", month: "short" })} · {ACTIVITY_TYPES[f.type].label} · {f.motivo || `faltan ${f.faltan}`}</p>
                 ))}
                 {resultado.faltantes.length > 6 && <p>y {resultado.faltantes.length - 6} más…</p>}
               </div>
@@ -1679,6 +1711,32 @@ function Configuracion({ ctx }) {
           <Field label="Cargos habilitados para turnos (separados por coma)">
             <input value={form.cargosTexto} disabled={!isMaestro} onChange={(e) => set("cargosTexto", e.target.value)} style={{ ...inputStyle, opacity: isMaestro ? 1 : 0.7 }} />
           </Field>
+        </div>
+
+        <div className="mt-4 pt-4 border-t" style={{ borderColor: T.border }}>
+          <div className="flex items-center justify-between mb-3">
+            <div className="pr-4">
+              <p className="font-medium text-[13.5px]">El operador terapéutico siempre va acompañado</p>
+              <p className="text-[12px]" style={{ color: T.muted }}>El auxiliar sí puede cubrir un turno día solo. Se aplica en el generador automático y en las alertas del calendario.</p>
+            </div>
+            <button
+              onClick={() => isMaestro && set("operadorRequiereAuxiliar", !form.operadorRequiereAuxiliar)}
+              className="w-10 h-6 rounded-full relative shrink-0"
+              style={{ background: form.operadorRequiereAuxiliar ? T.primary : T.border, opacity: isMaestro ? 1 : 0.6 }}
+            >
+              <span className="absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all" style={{ left: form.operadorRequiereAuxiliar ? 18 : 2 }} />
+            </button>
+          </div>
+          {form.operadorRequiereAuxiliar && (
+            <div className="grid sm:grid-cols-2 gap-3.5">
+              <Field label="Texto que identifica al operador">
+                <input value={form.cargoOperador} disabled={!isMaestro} onChange={(e) => set("cargoOperador", e.target.value)} style={{ ...inputStyle, opacity: isMaestro ? 1 : 0.7 }} />
+              </Field>
+              <Field label="Texto que identifica al auxiliar">
+                <input value={form.cargoAuxiliar} disabled={!isMaestro} onChange={(e) => set("cargoAuxiliar", e.target.value)} style={{ ...inputStyle, opacity: isMaestro ? 1 : 0.7 }} />
+              </Field>
+            </div>
+          )}
         </div>
       </div>
 
