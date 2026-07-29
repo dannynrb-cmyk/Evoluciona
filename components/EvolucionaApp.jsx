@@ -36,6 +36,8 @@ import {
   CartesianGrid,
 } from "recharts";
 import * as XLSX from "xlsx";
+import { jsPDF } from "jspdf";
+import autoTable from "jspdf-autotable";
 
 /* ============================== TOKENS ============================== */
 const T = {
@@ -1902,12 +1904,61 @@ function Reportes({ ctx }) {
     showToast("Reporte de personal descargado (.xlsx)");
   }
   function exportPDF() {
-    showToast("Abriendo vista de impresión para PDF…");
-    setTimeout(() => window.print(), 300);
+    const semanaISO = weekDays.map(toISO);
+    const eventosSemana = events.filter((e) => semanaISO.includes(e.date));
+    const actividades = eventosSemana
+      .filter((e) => ACTIVIDAD_TYPES.includes(e.type))
+      .sort((a, b) => a.date.localeCompare(b.date) || a.start - b.start);
+    const turnos = eventosSemana
+      .filter((e) => TURNO_TYPES.includes(e.type))
+      .sort((a, b) => a.date.localeCompare(b.date) || a.start - b.start);
+
+    const diaNombre = (dISO) => new Date(`${dISO}T00:00:00`).toLocaleDateString("es-CO", { weekday: "long", day: "numeric", month: "short" });
+
+    const doc = new jsPDF();
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(16);
+    doc.text("EVOLUCIONA", 14, 16);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(11);
+    doc.text(
+      `Programación semanal · ${weekDays[0].toLocaleDateString("es-CO", { day: "numeric", month: "long" })} – ${weekDays[6].toLocaleDateString("es-CO", { day: "numeric", month: "long", year: "numeric" })}`,
+      14, 24
+    );
+
+    doc.setFontSize(12);
+    doc.setFont("helvetica", "bold");
+    doc.text("Actividades", 14, 34);
+    autoTable(doc, {
+      startY: 37,
+      head: [["Día", "Actividad", "Tipo", "Horario", "Responsable"]],
+      body: actividades.length
+        ? actividades.map((e) => [diaNombre(e.date), e.title, ACTIVITY_TYPES[e.type].label, fmtRange(e.start, e.end), personName(e.personalId)])
+        : [["—", "Sin actividades programadas esta semana", "", "", ""]],
+      headStyles: { fillColor: [27, 110, 88] },
+      styles: { fontSize: 9 },
+    });
+
+    const y2 = (doc.lastAutoTable?.finalY || 37) + 10;
+    doc.setFontSize(12);
+    doc.setFont("helvetica", "bold");
+    doc.text("Turnos", 14, y2);
+    autoTable(doc, {
+      startY: y2 + 3,
+      head: [["Día", "Turno", "Horario", "Horas", "Responsable"]],
+      body: turnos.length
+        ? turnos.map((e) => [diaNombre(e.date), e.title, fmtRange(e.start, e.end), `${horasEfectivas(e)}h`, personName(e.personalId)])
+        : [["—", "Sin turnos programados esta semana", "", "", ""]],
+      headStyles: { fillColor: [27, 110, 88] },
+      styles: { fontSize: 9 },
+    });
+
+    doc.save(`evoluciona_programacion_${weekDays[0].toISOString().slice(0, 10)}.pdf`);
+    showToast("PDF de la programación semanal descargado");
   }
 
   const cards = [
-    { title: "Programación semanal (PDF)", desc: `Vista de impresión de la semana del ${weekDays[0].toLocaleDateString("es-CO", { day: "numeric", month: "short" })}`, action: exportPDF, icon: Printer },
+    { title: "Programación semanal (PDF)", desc: `Actividades y turnos de la semana del ${weekDays[0].toLocaleDateString("es-CO", { day: "numeric", month: "short" })} al ${weekDays[6].toLocaleDateString("es-CO", { day: "numeric", month: "short" })}`, action: exportPDF, icon: Printer },
     { title: "Turnos (Excel)", desc: "Listado completo de turnos asignados con responsable, cargo y área", action: exportTurnosXLSX, icon: Download },
     { title: "Personal asignado", desc: "Reporte de todo el personal registrado, su cargo, área y estado", action: exportPersonalXLSX, icon: Download },
   ];
