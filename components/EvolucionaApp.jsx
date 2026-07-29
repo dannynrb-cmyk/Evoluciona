@@ -22,6 +22,7 @@ import {
   BookOpen,
   Lock,
   Shield,
+  UserX,
 } from "lucide-react";
 import {
   BarChart,
@@ -130,13 +131,15 @@ function mapUsuario(row) {
 }
 
 async function fetchAllRemote() {
-  const [personalRows, actRows, turnRows, bibRows, reglasRow, festivoRows] = await Promise.all([
+  const [personalRows, actRows, turnRows, bibRows, reglasRow, festivoRows, novedadRows, reglaPersonalRows] = await Promise.all([
     sb("personal?select=*&order=nombre"),
     sb("actividades?select=*"),
     sb("turnos?select=*"),
     sb("biblioteca_actividades?select=*&order=nombre"),
     sb("reglas_turnos?select=*&limit=1"),
     sb("festivos?select=*&order=fecha"),
+    sb("novedades?select=*&order=fecha_inicio.desc"),
+    sb("reglas_personal?select=*"),
   ]);
   return {
     personal: personalRows.map(mapPersonal),
@@ -144,6 +147,8 @@ async function fetchAllRemote() {
     biblioteca: bibRows.map(mapBiblioteca),
     reglas: reglasRow && reglasRow[0] ? mapReglas(reglasRow[0]) : null,
     festivos: festivoRows.map(mapFestivo),
+    novedades: novedadRows.map(mapNovedad),
+    reglasPersonal: reglaPersonalRows.map(mapReglaPersonal),
   };
 }
 async function fetchEventsRemote() {
@@ -279,6 +284,36 @@ async function deleteFestivoRemote(id) {
   await sb(`festivos?id=eq.${id}`, { method: "DELETE", prefer: "return=minimal" });
 }
 
+function mapNovedad(row) {
+  return { id: row.id, personalId: row.personal_id, fechaInicio: row.fecha_inicio, fechaFin: row.fecha_fin, tipo: row.tipo, motivo: row.motivo || "" };
+}
+async function fetchNovedades() {
+  const rows = await sb("novedades?select=*&order=fecha_inicio.desc");
+  return rows.map(mapNovedad);
+}
+async function insertNovedadRemote(form) {
+  const [row] = await sb("novedades", { method: "POST", body: JSON.stringify({ personal_id: form.personalId, fecha_inicio: form.fechaInicio, fecha_fin: form.fechaFin, tipo: form.tipo, motivo: form.motivo || null }) });
+  return mapNovedad(row);
+}
+async function deleteNovedadRemote(id) {
+  await sb(`novedades?id=eq.${id}`, { method: "DELETE", prefer: "return=minimal" });
+}
+
+function mapReglaPersonal(row) {
+  return { id: row.id, personalId: row.personal_id, diaSemana: row.dia_semana, tipoTurno: row.tipo_turno === "dia" ? "turno_dia" : "turno_noche" };
+}
+async function fetchReglasPersonal() {
+  const rows = await sb("reglas_personal?select=*");
+  return rows.map(mapReglaPersonal);
+}
+async function insertReglaPersonalRemote(form) {
+  const [row] = await sb("reglas_personal", { method: "POST", body: JSON.stringify({ personal_id: form.personalId, dia_semana: Number(form.diaSemana), tipo_turno: form.tipoTurno === "turno_dia" ? "dia" : "noche" }) });
+  return mapReglaPersonal(row);
+}
+async function deleteReglaPersonalRemote(id) {
+  await sb(`reglas_personal?id=eq.${id}`, { method: "DELETE", prefer: "return=minimal" });
+}
+
 /* ============================== DATA ============================== */
 const TODAY = (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; })(); // fecha real de hoy
 let PERSONAL_STATE = []; // se llena al cargar desde Supabase; usado por personName/personById
@@ -307,6 +342,7 @@ const NAV = [
   { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { key: "actividades", label: "Actividades", icon: CalendarDays },
   { key: "turnos", label: "Turnos", icon: Clock },
+  { key: "novedades", label: "Novedades", icon: UserX },
   { key: "biblioteca", label: "Biblioteca", icon: BookOpen },
   { key: "personal", label: "Personal", icon: Users },
   { key: "reportes", label: "Reportes", icon: FileBarChart },
@@ -324,6 +360,7 @@ function esCargoDeTurno(cargo, cargosTurno) {
 
 /* ============================== HELPERS ============================== */
 const DIA_LABEL = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
+const DIA_LABEL_LARGO = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábados", "domingos"];
 const MES_LABEL = [
   "enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre",
 ];
@@ -384,6 +421,8 @@ export default function EvolucionaApp() {
   const [biblioteca, setBiblioteca] = useState([]);
   const [reglas, setReglas] = useState(null);
   const [festivos, setFestivos] = useState([]);
+  const [novedades, setNovedades] = useState([]);
+  const [reglasPersonal, setReglasPersonal] = useState([]);
   const [weekOffset, setWeekOffset] = useState(0);
   const [calMode, setCalMode] = useState("semana");
   const [monthOffset, setMonthOffset] = useState(0);
@@ -392,6 +431,7 @@ export default function EvolucionaApp() {
   const [personalModal, setPersonalModal] = useState(null); // {mode, person}
   const [bibModal, setBibModal] = useState(null); // {mode, item}
   const [festivoModal, setFestivoModal] = useState(false);
+  const [reglaPersonalModal, setReglaPersonalModal] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState(null);
@@ -414,6 +454,8 @@ export default function EvolucionaApp() {
       setBiblioteca(data.biblioteca);
       setReglas(data.reglas);
       setFestivos(data.festivos);
+      setNovedades(data.novedades);
+      setReglasPersonal(data.reglasPersonal);
     } catch (err) {
       setLoadError(err.message || "No se pudo conectar a Supabase.");
     } finally {
@@ -578,6 +620,60 @@ export default function EvolucionaApp() {
       setSaving(false);
     }
   }
+  async function saveNovedad(form) {
+    setSaving(true);
+    try {
+      const saved = await insertNovedadRemote(form);
+      setNovedades((prev) => [saved, ...prev]);
+      showToast("Novedad registrada");
+    } catch (err) {
+      showToast(`No se pudo guardar: ${err.message}`, "warn");
+    } finally {
+      setSaving(false);
+    }
+  }
+  async function deleteNovedad(id) {
+    try {
+      await deleteNovedadRemote(id);
+      setNovedades((prev) => prev.filter((n) => n.id !== id));
+      showToast("Novedad eliminada", "warn");
+    } catch (err) {
+      showToast(`No se pudo eliminar: ${err.message}`, "warn");
+    }
+  }
+  async function saveReglaPersonal(form) {
+    setSaving(true);
+    try {
+      const saved = await insertReglaPersonalRemote(form);
+      setReglasPersonal((prev) => [...prev, saved]);
+      showToast("Regla fija guardada");
+    } catch (err) {
+      showToast(`No se pudo guardar: ${err.message}`, "warn");
+    } finally {
+      setSaving(false);
+    }
+  }
+  async function deleteReglaPersonal(id) {
+    try {
+      await deleteReglaPersonalRemote(id);
+      setReglasPersonal((prev) => prev.filter((r) => r.id !== id));
+      showToast("Regla fija eliminada", "warn");
+    } catch (err) {
+      showToast(`No se pudo eliminar: ${err.message}`, "warn");
+    }
+  }
+  async function reemplazarTurno(turno, nuevoPersonalId) {
+    setSaving(true);
+    try {
+      await updateEventRemote({ ...turno, personalId: nuevoPersonalId });
+      setEvents(await fetchEventsRemote());
+      showToast("Reemplazo confirmado");
+    } catch (err) {
+      showToast(`No se pudo reemplazar: ${err.message}`, "warn");
+    } finally {
+      setSaving(false);
+    }
+  }
 
   const ctx = {
     events, setEvents, personal, setPersonal, biblioteca, weekStart, weekDays, weekOffset, setWeekOffset,
@@ -587,6 +683,10 @@ export default function EvolucionaApp() {
     bibModal, setBibModal, saveBiblioteca, deleteBiblioteca,
     reglas, saveReglas, festivos, addFestivo, deleteFestivo, festivoModal, setFestivoModal,
     confirmarPropuestaTurnos,
+    novedades, saveNovedad, deleteNovedad,
+    reglasPersonal, saveReglaPersonal, deleteReglaPersonal,
+    reglaPersonalModal, setReglaPersonalModal,
+    reemplazarTurno,
   };
 
   if (loading) {
@@ -718,6 +818,7 @@ export default function EvolucionaApp() {
           {view === "dashboard" && <Dashboard ctx={ctx} />}
           {view === "actividades" && <ActividadesCalendario ctx={ctx} />}
           {view === "turnos" && <TurnosCalendario ctx={ctx} />}
+          {view === "novedades" && <Novedades ctx={ctx} />}
           {view === "biblioteca" && <Biblioteca ctx={ctx} />}
           {view === "personal" && <Personal ctx={ctx} />}
           {view === "reportes" && <Reportes ctx={ctx} />}
@@ -1025,7 +1126,11 @@ function esAuxiliar(cargo, reglas) {
 // los candidatos válidos prioriza a quien lleve menos turnos de ese tipo y
 // menos horas acumuladas en la semana (reparto justo). No guarda nada por sí
 // sola: devuelve una propuesta para que el Maestro la revise y confirme.
-function generarPropuestaTurnos({ personal, eventosExistentes, reglas, festivos, fechaInicioISO, semanas }) {
+function estaAusente(personalId, dISO, novedades) {
+  return (novedades || []).some((n) => n.personalId === personalId && dISO >= n.fechaInicio && dISO <= n.fechaFin);
+}
+
+function generarPropuestaTurnos({ personal, eventosExistentes, reglas, festivos, novedades, reglasPersonal, fechaInicioISO, semanas }) {
   const festivoSet = new Set((festivos || []).map((f) => f.fecha));
   const elegibles = personal.filter((p) => p.estado === "activo" && esCargoDeTurno(p.cargo, reglas?.cargosTurno));
   const inicio = getMonday(new Date(`${fechaInicioISO}T00:00:00`));
@@ -1055,6 +1160,7 @@ function generarPropuestaTurnos({ personal, eventosExistentes, reglas, festivos,
     diasSemana.forEach((d, diaIdx) => {
       const dISO = toISO(d);
       const diaAnteriorISO = diaIdx > 0 ? toISO(diasSemana[diaIdx - 1]) : toISO(addDays(d, -1));
+      const nuestroDia = (d.getDay() + 6) % 7; // 0=lunes ... 6=domingo
       ["turno_dia", "turno_noche"].forEach((tipo) => {
         const yaExiste = eventosExistentes.some((e) => e.date === dISO && e.type === tipo);
         if (yaExiste) return; // no se toca lo que ya está manualmente cubierto
@@ -1062,7 +1168,29 @@ function generarPropuestaTurnos({ personal, eventosExistentes, reglas, festivos,
         const start = tipo === "turno_dia" ? 7 : 17;
         const end = tipo === "turno_dia" ? 17 : 31;
 
+        // Reglas fijas por persona (ej. "Javier siempre turno día los miércoles")
+        const fijos = [];
+        (reglasPersonal || []).filter((r) => r.diaSemana === nuestroDia && r.tipoTurno === tipo).forEach((r) => {
+          const persona = elegibles.find((p) => p.id === r.personalId);
+          if (!persona || asignadoHoy[dISO]?.has(persona.id)) return;
+          if (estaAusente(persona.id, dISO, novedades)) {
+            faltantes.push({ date: dISO, type: tipo, faltan: 0, motivo: `regla fija de ${persona.nombre} no aplicada (tiene una novedad activa)` });
+            return;
+          }
+          if (tipo === "turno_dia" && nocheAyer[diaAnteriorISO]?.has(persona.id)) {
+            faltantes.push({ date: dISO, type: tipo, faltan: 0, motivo: `regla fija de ${persona.nombre} no aplicada (venía de turno noche)` });
+            return;
+          }
+          if (conteo[persona.id].horas + horasEfectivas({ type: tipo, start, end }) > reglas.horasSemanaObjetivo) {
+            faltantes.push({ date: dISO, type: tipo, faltan: 0, motivo: `regla fija de ${persona.nombre} no aplicada (supera las horas semanales)` });
+            return;
+          }
+          fijos.push(persona);
+        });
+
         const candidatos = elegibles
+          .filter((p) => !fijos.some((f) => f.id === p.id))
+          .filter((p) => !estaAusente(p.id, dISO, novedades)) // sin novedad activa ese día
           .filter((p) => !(asignadoHoy[dISO]?.has(p.id))) // no dos turnos el mismo día
           .filter((p) => !(tipo === "turno_dia" && nocheAyer[diaAnteriorISO]?.has(p.id))) // descanso tras turno noche
           .filter((p) => conteo[p.id].horas + horasEfectivas({ type: tipo, start, end }) <= reglas.horasSemanaObjetivo)
@@ -1072,7 +1200,7 @@ function generarPropuestaTurnos({ personal, eventosExistentes, reglas, festivos,
             return ca.horas - cb.horas;
           });
 
-        let elegidos = candidatos.slice(0, requerido);
+        let elegidos = [...fijos, ...candidatos.slice(0, Math.max(0, requerido - fijos.length))];
 
         if (reglas.operadorRequiereAuxiliar) {
           const hayOperador = elegidos.some((p) => esOperador(p.cargo, reglas));
@@ -1105,6 +1233,41 @@ function generarPropuestaTurnos({ personal, eventosExistentes, reglas, festivos,
   return { propuestas, faltantes, elegiblesCount: elegibles.length };
 }
 
+// Sugiere quién puede cubrir un turno puntual (usado por el módulo de Novedades).
+// Prioriza a alguien del mismo rol (operador/auxiliar) que la persona ausente,
+// para no romper la regla de acompañamiento, y luego por reparto justo.
+function sugerirReemplazo({ turno, personal, eventosExistentes, reglas, novedades }) {
+  const original = personal.find((p) => p.id === turno.personalId);
+  const elegibles = personal.filter((p) => p.estado === "activo" && esCargoDeTurno(p.cargo, reglas?.cargosTurno) && p.id !== turno.personalId);
+  const monday = getMonday(new Date(`${turno.date}T00:00:00`));
+  const weekDates = Array.from({ length: 7 }, (_, i) => toISO(addDays(monday, i)));
+  const conteo = {};
+  elegibles.forEach((p) => { conteo[p.id] = { turno_dia: 0, turno_noche: 0, horas: 0 }; });
+  eventosExistentes.filter((e) => weekDates.includes(e.date) && TURNO_TYPES.includes(e.type) && e.personalId && conteo[e.personalId]).forEach((e) => {
+    conteo[e.personalId][e.type] += 1;
+    conteo[e.personalId].horas += horasEfectivas(e);
+  });
+  const diaAnteriorISO = toISO(addDays(new Date(`${turno.date}T00:00:00`), -1));
+  const ocupadosEseDia = new Set(eventosExistentes.filter((e) => e.date === turno.date && e.personalId && e.id !== turno.id).map((e) => e.personalId));
+  const nocheAyerSet = new Set(eventosExistentes.filter((e) => e.date === diaAnteriorISO && e.type === "turno_noche" && e.personalId).map((e) => e.personalId));
+
+  const candidatos = elegibles
+    .filter((p) => !estaAusente(p.id, turno.date, novedades))
+    .filter((p) => !ocupadosEseDia.has(p.id))
+    .filter((p) => !(turno.type === "turno_dia" && nocheAyerSet.has(p.id)))
+    .filter((p) => conteo[p.id].horas + horasEfectivas(turno) <= (reglas?.horasSemanaObjetivo ?? 44))
+    .sort((a, b) => {
+      const mismoRolA = original ? (esOperador(a.cargo, reglas) === esOperador(original.cargo, reglas) ? 0 : 1) : 0;
+      const mismoRolB = original ? (esOperador(b.cargo, reglas) === esOperador(original.cargo, reglas) ? 0 : 1) : 0;
+      if (mismoRolA !== mismoRolB) return mismoRolA - mismoRolB;
+      const ca = conteo[a.id], cb = conteo[b.id];
+      if (ca[turno.type] !== cb[turno.type]) return ca[turno.type] - cb[turno.type];
+      return ca.horas - cb.horas;
+    });
+
+  return candidatos[0] || null;
+}
+
 /* ============================== TURNOS (calendario) ============================== */
 function TurnosCalendario({ ctx }) {
   const { isMaestro, events, personal, monthOffset, setMonthOffset, setDetail, reglas, festivos } = ctx;
@@ -1114,11 +1277,6 @@ function TurnosCalendario({ ctx }) {
   const [generarOpen, setGenerarOpen] = useState(false);
 
   const baseParaResumen = elegibles.length > 0 ? elegibles : personal;
-  const porPersona = baseParaResumen.map((p) => {
-    const suyos = turnos.filter((t) => t.personalId === p.id);
-    const horas = suyos.reduce((a, t) => a + horasEfectivas(t), 0);
-    return { ...p, turnos: suyos.length, horasAsignadas: horas };
-  });
 
   const base = new Date(TODAY.getFullYear(), TODAY.getMonth() + monthOffset, 1);
   const gridStart = getMonday(new Date(base.getFullYear(), base.getMonth(), 1));
@@ -1126,6 +1284,16 @@ function TurnosCalendario({ ctx }) {
   const todayISO = toISO(TODAY);
   const lastCellInMonth = cells.reduce((acc, d, i) => (d.getMonth() === base.getMonth() ? i : acc), 0);
   const visibleCells = cells.slice(0, Math.ceil((lastCellInMonth + 1) / 7) * 7);
+  const semanasDelMes = [];
+  for (let i = 0; i < visibleCells.length; i += 7) semanasDelMes.push(visibleCells.slice(i, i + 7));
+
+  const horasPorSemana = baseParaResumen.map((p) => {
+    const porSemana = semanasDelMes.map((semana) => {
+      const fechas = semana.map(toISO);
+      return turnos.filter((t) => t.personalId === p.id && fechas.includes(t.date)).reduce((a, t) => a + horasEfectivas(t), 0);
+    });
+    return { ...p, porSemana };
+  });
 
   function chipsFor(dISO, tipo) {
     return turnos.filter((t) => t.date === dISO && t.type === tipo);
@@ -1206,23 +1374,39 @@ function TurnosCalendario({ ctx }) {
         </div>
       </div>
 
-      <div className="ev-card overflow-hidden max-w-md">
+      <div className="ev-card overflow-hidden max-w-2xl">
         <div className="px-4 py-3 border-b" style={{ borderColor: T.border }}>
-          <h3 className="ev-display font-semibold text-[13.5px]">Horas por colaborador · semana actual</h3>
+          <h3 className="ev-display font-semibold text-[13.5px]">Horas por colaborador · por semana de {MES_LABEL[base.getMonth()]}</h3>
         </div>
-        <div className="divide-y" style={{ borderColor: T.border }}>
-          {porPersona.map((p) => {
-            const over = p.horasAsignadas > p.horas;
-            return (
-              <div key={p.id} className="flex items-center justify-between px-4 py-2 text-[12.5px]">
-                <span className="font-medium">{p.nombre}</span>
-                <span className="ev-mono" style={{ color: over ? T.danger : T.muted }}>{p.horasAsignadas}h / {p.horas}h</span>
-              </div>
-            );
-          })}
-          {porPersona.length === 0 && (
-            <p className="px-4 py-5 text-[12px] text-center" style={{ color: T.muted }}>No hay colaboradores registrados para turnos.</p>
-          )}
+        <div className="overflow-x-auto ev-scroll">
+          <table className="w-full text-[12.5px]">
+            <thead>
+              <tr className="text-left" style={{ color: T.muted }}>
+                <th className="px-4 py-2 font-medium text-[11px] uppercase tracking-wide">Colaborador</th>
+                {semanasDelMes.map((_, i) => (
+                  <th key={i} className="px-3 py-2 font-medium text-[11px] uppercase tracking-wide text-right">Semana {i + 1}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {horasPorSemana.map((p) => (
+                <tr key={p.id} className="border-t" style={{ borderColor: T.border }}>
+                  <td className="px-4 py-2 font-medium">{p.nombre}</td>
+                  {p.porSemana.map((h, i) => {
+                    const over = reglas && h > reglas.horasSemanaObjetivo;
+                    return (
+                      <td key={i} className="px-3 py-2 text-right ev-mono" style={{ color: over ? T.danger : T.muted }}>
+                        {h}h
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+              {horasPorSemana.length === 0 && (
+                <tr><td colSpan={semanasDelMes.length + 1} className="px-4 py-5 text-center" style={{ color: T.muted }}>No hay colaboradores registrados para turnos.</td></tr>
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>
@@ -1269,7 +1453,7 @@ function GenerarTurnosModal({ ctx, onClose }) {
   const [excluidos, setExcluidos] = useState(new Set());
 
   function generar() {
-    const r = generarPropuestaTurnos({ personal, eventosExistentes: events, reglas, festivos, fechaInicioISO: fechaInicio, semanas: Number(semanas) });
+    const r = generarPropuestaTurnos({ personal, eventosExistentes: events, reglas, festivos, novedades: ctx.novedades, reglasPersonal: ctx.reglasPersonal, fechaInicioISO: fechaInicio, semanas: Number(semanas) });
     setResultado(r);
     setExcluidos(new Set());
   }
@@ -1789,7 +1973,85 @@ function Configuracion({ ctx }) {
         </div>
       </div>
 
+      <div className="ev-card overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderColor: T.border }}>
+          <div>
+            <h3 className="ev-display font-semibold text-[15px]">Reglas fijas por persona</h3>
+            <p className="text-[12px]" style={{ color: T.muted }}>Ej. "Javier siempre turno día los miércoles". El generador automático las aplica antes de repartir el resto.</p>
+          </div>
+          {isMaestro && (
+            <button onClick={() => ctx.setReglaPersonalModal(true)} className="ev-btn px-3 py-1.5 text-[12px] text-white shrink-0" style={{ background: T.primary }}>
+              <Plus size={13} /> Agregar
+            </button>
+          )}
+        </div>
+        <div className="divide-y" style={{ borderColor: T.border }}>
+          {ctx.reglasPersonal.map((r) => {
+            const persona = personById(r.personalId);
+            return (
+              <div key={r.id} className="flex items-center justify-between px-5 py-2.5 text-[13px]">
+                <span>{persona?.nombre || "Persona eliminada"} — siempre {ACTIVITY_TYPES[r.tipoTurno].label.toLowerCase()} los {DIA_LABEL_LARGO[r.diaSemana]}</span>
+                {isMaestro && (
+                  <button onClick={() => ctx.deleteReglaPersonal(r.id)} className="ev-btn text-[11.5px] px-2 py-1" style={{ background: T.dangerSoft, color: T.danger }}>
+                    <Trash2 size={11} />
+                  </button>
+                )}
+              </div>
+            );
+          })}
+          {ctx.reglasPersonal.length === 0 && <p className="px-5 py-6 text-[12.5px] text-center" style={{ color: T.muted }}>No hay reglas fijas por persona.</p>}
+        </div>
+      </div>
+
       {festivoModal && <FestivoModal ctx={ctx} onClose={() => setFestivoModal(false)} />}
+      {ctx.reglaPersonalModal && <ReglaPersonalModal ctx={ctx} onClose={() => ctx.setReglaPersonalModal(false)} />}
+    </div>
+  );
+}
+
+function ReglaPersonalModal({ ctx, onClose }) {
+  const { personal, saveReglaPersonal, saving } = ctx;
+  const [form, setForm] = useState({ personalId: "", diaSemana: 0, tipoTurno: "turno_dia" });
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="ev-card w-full max-w-sm p-5">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="ev-display font-semibold text-[16px]">Nueva regla fija</h3>
+          <button onClick={onClose}><X size={18} /></button>
+        </div>
+        <div className="flex flex-col gap-3.5">
+          <Field label="Persona">
+            <select value={form.personalId} onChange={(e) => set("personalId", e.target.value)} style={inputStyle}>
+              <option value="">Selecciona…</option>
+              {personal.map((p) => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+            </select>
+          </Field>
+          <Field label="Día de la semana">
+            <select value={form.diaSemana} onChange={(e) => set("diaSemana", Number(e.target.value))} style={inputStyle}>
+              {DIA_LABEL_LARGO.map((d, i) => <option key={i} value={i}>{d}</option>)}
+            </select>
+          </Field>
+          <Field label="Turno">
+            <select value={form.tipoTurno} onChange={(e) => set("tipoTurno", e.target.value)} style={inputStyle}>
+              <option value="turno_dia">Turno Día</option>
+              <option value="turno_noche">Turno Noche</option>
+            </select>
+          </Field>
+        </div>
+        <div className="flex justify-end gap-2 mt-5">
+          <button onClick={onClose} className="ev-btn px-4 py-2 text-[13px]" style={{ border: `1px solid ${T.border}` }}>Cancelar</button>
+          <button
+            onClick={() => saveReglaPersonal(form).then(onClose)}
+            disabled={!form.personalId || saving}
+            className="ev-btn px-4 py-2 text-[13px] text-white disabled:opacity-40"
+            style={{ background: T.primary }}
+          >
+            {saving ? "Guardando…" : "Guardar"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -2107,6 +2369,152 @@ function PersonalModal({ ctx, onClose, initial }) {
 }
 
 /* ============================== BIBLIOTECA DE ACTIVIDADES ============================== */
+/* ============================== NOVEDADES ============================== */
+function Novedades({ ctx }) {
+  const { novedades, personal, events, reglas, isMaestro, deleteNovedad, reemplazarTurno, showToast } = ctx;
+  const [modalOpen, setModalOpen] = useState(false);
+  const todayISO = toISO(TODAY);
+
+  function afectadosDe(n) {
+    return events.filter((e) => TURNO_TYPES.includes(e.type) && e.personalId === n.personalId && e.date >= n.fechaInicio && e.date <= n.fechaFin);
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <ReadOnlyBanner isMaestro={isMaestro} />
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="ev-display font-semibold text-[16px]">Novedades</h3>
+          <p className="text-[12.5px]" style={{ color: T.muted }}>Incapacidades, permisos u otras ausencias, con sugerencia de reemplazo para los turnos afectados.</p>
+        </div>
+        {isMaestro && (
+          <button onClick={() => setModalOpen(true)} className="ev-btn px-3.5 py-2 text-[12.5px] text-white" style={{ background: T.primary }}>
+            <Plus size={14} /> Reportar novedad
+          </button>
+        )}
+      </div>
+
+      <div className="flex flex-col gap-3">
+        {novedades.map((n) => {
+          const persona = personById(n.personalId);
+          const afectados = afectadosDe(n);
+          const vigente = n.fechaFin >= todayISO;
+          return (
+            <div key={n.id} className="ev-card p-4">
+              <div className="flex items-start justify-between gap-3 mb-2">
+                <div>
+                  <p className="font-semibold text-[13.5px]">{persona?.nombre || "Persona eliminada"}</p>
+                  <p className="text-[12px]" style={{ color: T.muted }}>
+                    {n.tipo === "incapacidad" ? "Incapacidad" : n.tipo === "permiso" ? "Permiso" : n.tipo === "vacaciones" ? "Vacaciones" : "Otro"}
+                    {" · "}{new Date(`${n.fechaInicio}T00:00:00`).toLocaleDateString("es-CO", { day: "numeric", month: "short" })} – {new Date(`${n.fechaFin}T00:00:00`).toLocaleDateString("es-CO", { day: "numeric", month: "short", year: "numeric" })}
+                    {n.motivo ? ` · ${n.motivo}` : ""}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold" style={{ background: vigente ? T.dangerSoft : T.primarySoft, color: vigente ? T.danger : T.primaryDark }}>
+                    {vigente ? "Vigente" : "Pasada"}
+                  </span>
+                  {isMaestro && (
+                    <button onClick={() => deleteNovedad(n.id)} className="ev-btn text-[11.5px] px-2 py-1" style={{ background: T.dangerSoft, color: T.danger }}>
+                      <Trash2 size={11} />
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {afectados.length === 0 ? (
+                <p className="text-[12px]" style={{ color: T.muted }}>No tenía turnos asignados en ese rango.</p>
+              ) : (
+                <div className="flex flex-col gap-1.5 mt-2 pt-2 border-t" style={{ borderColor: T.border }}>
+                  {afectados.map((turno) => {
+                    const sugerido = sugerirReemplazo({ turno, personal, eventosExistentes: events, reglas, novedades });
+                    return (
+                      <div key={turno.id} className="flex items-center justify-between text-[12.5px]">
+                        <span>
+                          {new Date(`${turno.date}T00:00:00`).toLocaleDateString("es-CO", { weekday: "short", day: "numeric", month: "short" })} · {ACTIVITY_TYPES[turno.type].label}
+                        </span>
+                        {isMaestro && (
+                          sugerido ? (
+                            <button onClick={() => reemplazarTurno(turno, sugerido.id)} className="ev-btn text-[11.5px] px-2.5 py-1 text-white" style={{ background: T.primary }}>
+                              Cubrir con {sugerido.nombre}
+                            </button>
+                          ) : (
+                            <span className="text-[11.5px]" style={{ color: T.danger }}>Sin reemplazo disponible</span>
+                          )
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {novedades.length === 0 && (
+          <p className="text-[12.5px] text-center py-8" style={{ color: T.muted }}>No hay novedades reportadas.</p>
+        )}
+      </div>
+
+      {modalOpen && <NovedadModal ctx={ctx} onClose={() => setModalOpen(false)} />}
+    </div>
+  );
+}
+
+function NovedadModal({ ctx, onClose }) {
+  const { personal, saveNovedad, saving } = ctx;
+  const [form, setForm] = useState({ personalId: "", fechaInicio: toISO(TODAY), fechaFin: toISO(TODAY), tipo: "incapacidad", motivo: "" });
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="ev-card w-full max-w-sm p-5">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="ev-display font-semibold text-[16px]">Reportar novedad</h3>
+          <button onClick={onClose}><X size={18} /></button>
+        </div>
+        <div className="flex flex-col gap-3.5">
+          <Field label="Persona">
+            <select value={form.personalId} onChange={(e) => set("personalId", e.target.value)} style={inputStyle}>
+              <option value="">Selecciona…</option>
+              {personal.map((p) => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+            </select>
+          </Field>
+          <Field label="Tipo">
+            <select value={form.tipo} onChange={(e) => set("tipo", e.target.value)} style={inputStyle}>
+              <option value="incapacidad">Incapacidad</option>
+              <option value="permiso">Permiso</option>
+              <option value="vacaciones">Vacaciones</option>
+              <option value="otro">Otro</option>
+            </select>
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Desde">
+              <input type="date" value={form.fechaInicio} onChange={(e) => set("fechaInicio", e.target.value)} style={inputStyle} />
+            </Field>
+            <Field label="Hasta">
+              <input type="date" value={form.fechaFin} onChange={(e) => set("fechaFin", e.target.value)} style={inputStyle} />
+            </Field>
+          </div>
+          <Field label="Motivo (opcional)">
+            <input value={form.motivo} onChange={(e) => set("motivo", e.target.value)} placeholder="Ej. cirugía programada" style={inputStyle} />
+          </Field>
+        </div>
+        <div className="flex justify-end gap-2 mt-5">
+          <button onClick={onClose} className="ev-btn px-4 py-2 text-[13px]" style={{ border: `1px solid ${T.border}` }}>Cancelar</button>
+          <button
+            onClick={() => saveNovedad(form).then(onClose)}
+            disabled={!form.personalId || form.fechaFin < form.fechaInicio || saving}
+            className="ev-btn px-4 py-2 text-[13px] text-white disabled:opacity-40"
+            style={{ background: T.primary }}
+          >
+            {saving ? "Guardando…" : "Guardar"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Biblioteca({ ctx }) {
   const { biblioteca, isMaestro, setBibModal, deleteBiblioteca } = ctx;
   return (
