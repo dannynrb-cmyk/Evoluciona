@@ -300,14 +300,14 @@ async function deleteNovedadRemote(id) {
 }
 
 function mapReglaPersonal(row) {
-  return { id: row.id, personalId: row.personal_id, diaSemana: row.dia_semana, tipoTurno: row.tipo_turno === "dia" ? "turno_dia" : "turno_noche" };
+  return { id: row.id, personalId: row.personal_id, diaSemana: row.dia_semana, tipoTurno: row.tipo_turno === "dia" ? "turno_dia" : "turno_noche", tipoRegla: row.tipo_regla || "siempre" };
 }
 async function fetchReglasPersonal() {
   const rows = await sb("reglas_personal?select=*");
   return rows.map(mapReglaPersonal);
 }
 async function insertReglaPersonalRemote(form) {
-  const [row] = await sb("reglas_personal", { method: "POST", body: JSON.stringify({ personal_id: form.personalId, dia_semana: Number(form.diaSemana), tipo_turno: form.tipoTurno === "turno_dia" ? "dia" : "noche" }) });
+  const [row] = await sb("reglas_personal", { method: "POST", body: JSON.stringify({ personal_id: form.personalId, dia_semana: Number(form.diaSemana), tipo_turno: form.tipoTurno === "turno_dia" ? "dia" : "noche", tipo_regla: form.tipoRegla || "siempre" }) });
   return mapReglaPersonal(row);
 }
 async function deleteReglaPersonalRemote(id) {
@@ -1168,9 +1168,9 @@ function generarPropuestaTurnos({ personal, eventosExistentes, reglas, festivos,
         const start = tipo === "turno_dia" ? 7 : 17;
         const end = tipo === "turno_dia" ? 17 : 31;
 
-        // Reglas fijas por persona (ej. "Javier siempre turno día los miércoles")
+        // Reglas fijas por persona: "siempre" fuerza la asignación, "nunca" la excluye
         const fijos = [];
-        (reglasPersonal || []).filter((r) => r.diaSemana === nuestroDia && r.tipoTurno === tipo).forEach((r) => {
+        (reglasPersonal || []).filter((r) => r.diaSemana === nuestroDia && r.tipoTurno === tipo && r.tipoRegla === "siempre").forEach((r) => {
           const persona = elegibles.find((p) => p.id === r.personalId);
           if (!persona || asignadoHoy[dISO]?.has(persona.id)) return;
           if (estaAusente(persona.id, dISO, novedades)) {
@@ -1187,9 +1187,13 @@ function generarPropuestaTurnos({ personal, eventosExistentes, reglas, festivos,
           }
           fijos.push(persona);
         });
+        const excluidosPorRegla = new Set(
+          (reglasPersonal || []).filter((r) => r.diaSemana === nuestroDia && r.tipoTurno === tipo && r.tipoRegla === "nunca").map((r) => r.personalId)
+        );
 
         const candidatos = elegibles
           .filter((p) => !fijos.some((f) => f.id === p.id))
+          .filter((p) => !excluidosPorRegla.has(p.id)) // regla "nunca" para este día/turno
           .filter((p) => !estaAusente(p.id, dISO, novedades)) // sin novedad activa ese día
           .filter((p) => !(asignadoHoy[dISO]?.has(p.id))) // no dos turnos el mismo día
           .filter((p) => !(tipo === "turno_dia" && nocheAyer[diaAnteriorISO]?.has(p.id))) // descanso tras turno noche
@@ -1976,8 +1980,8 @@ function Configuracion({ ctx }) {
       <div className="ev-card overflow-hidden">
         <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderColor: T.border }}>
           <div>
-            <h3 className="ev-display font-semibold text-[15px]">Reglas fijas por persona</h3>
-            <p className="text-[12px]" style={{ color: T.muted }}>Ej. "Javier siempre turno día los miércoles". El generador automático las aplica antes de repartir el resto.</p>
+            <h3 className="ev-display font-semibold text-[15px]">Reglas por persona</h3>
+            <p className="text-[12px]" style={{ color: T.muted }}>Ej. "Javier siempre turno día los miércoles" o "Javier nunca turno noche los martes". El generador automático las respeta.</p>
           </div>
           {isMaestro && (
             <button onClick={() => ctx.setReglaPersonalModal(true)} className="ev-btn px-3 py-1.5 text-[12px] text-white shrink-0" style={{ background: T.primary }}>
@@ -1990,7 +1994,9 @@ function Configuracion({ ctx }) {
             const persona = personById(r.personalId);
             return (
               <div key={r.id} className="flex items-center justify-between px-5 py-2.5 text-[13px]">
-                <span>{persona?.nombre || "Persona eliminada"} — siempre {ACTIVITY_TYPES[r.tipoTurno].label.toLowerCase()} los {DIA_LABEL_LARGO[r.diaSemana]}</span>
+                <span>
+                  {persona?.nombre || "Persona eliminada"} — {r.tipoRegla === "nunca" ? "nunca" : "siempre"} {ACTIVITY_TYPES[r.tipoTurno].label.toLowerCase()} los {DIA_LABEL_LARGO[r.diaSemana]}
+                </span>
                 {isMaestro && (
                   <button onClick={() => ctx.deleteReglaPersonal(r.id)} className="ev-btn text-[11.5px] px-2 py-1" style={{ background: T.dangerSoft, color: T.danger }}>
                     <Trash2 size={11} />
@@ -2011,14 +2017,14 @@ function Configuracion({ ctx }) {
 
 function ReglaPersonalModal({ ctx, onClose }) {
   const { personal, saveReglaPersonal, saving } = ctx;
-  const [form, setForm] = useState({ personalId: "", diaSemana: 0, tipoTurno: "turno_dia" });
+  const [form, setForm] = useState({ personalId: "", diaSemana: 0, tipoTurno: "turno_dia", tipoRegla: "siempre" });
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       <div className="ev-card w-full max-w-sm p-5">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="ev-display font-semibold text-[16px]">Nueva regla fija</h3>
+          <h3 className="ev-display font-semibold text-[16px]">Nueva regla por persona</h3>
           <button onClick={onClose}><X size={18} /></button>
         </div>
         <div className="flex flex-col gap-3.5">
@@ -2026,6 +2032,12 @@ function ReglaPersonalModal({ ctx, onClose }) {
             <select value={form.personalId} onChange={(e) => set("personalId", e.target.value)} style={inputStyle}>
               <option value="">Selecciona…</option>
               {personal.map((p) => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+            </select>
+          </Field>
+          <Field label="Tipo de regla">
+            <select value={form.tipoRegla} onChange={(e) => set("tipoRegla", e.target.value)} style={inputStyle}>
+              <option value="siempre">Siempre asignar (obligatorio)</option>
+              <option value="nunca">Nunca asignar (excluir)</option>
             </select>
           </Field>
           <Field label="Día de la semana">
