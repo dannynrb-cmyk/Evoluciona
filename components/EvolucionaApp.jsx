@@ -23,6 +23,8 @@ import {
   Lock,
   Shield,
   UserX,
+  Sun,
+  Moon,
 } from "lucide-react";
 import {
   BarChart,
@@ -36,26 +38,84 @@ import {
 
 /* ============================== TOKENS ============================== */
 const T = {
-  ink: "#12211E",
-  base: "#F5F7F5",
-  surface: "#FFFFFF",
-  primary: "#1F6F5C",
-  primaryDark: "#144B3F",
-  primarySoft: "#E4EFEC",
-  accent: "#E8A33D",
-  accentSoft: "#FBF0DE",
-  border: "#DFE5E2",
-  muted: "#5C6B67",
-  danger: "#C1553B",
-  dangerSoft: "#FBEAE4",
+  ink: "var(--ev-ink)",
+  base: "var(--ev-base)",
+  surface: "var(--ev-surface)",
+  primary: "var(--ev-primary)",
+  primaryDark: "var(--ev-primary-dark)",
+  primarySoft: "var(--ev-primary-soft)",
+  accent: "var(--ev-accent)",
+  accentSoft: "var(--ev-accent-soft)",
+  accentInk: "var(--ev-accent-ink)",
+  border: "var(--ev-border)",
+  muted: "var(--ev-muted)",
+  danger: "var(--ev-danger)",
+  dangerSoft: "var(--ev-danger-soft)",
+  shadow: "var(--ev-shadow)",
 };
 
+// Estilo de tema claro (por defecto) y oscuro. Se inyectan como variables CSS
+// para que toda la app (que ya usa T.xxx en línea) cambie de tema sin tocar
+// cada pantalla — solo cambia el valor detrás de la variable.
+const THEME_CSS = `
+  .ev-root {
+    --ev-ink: #14201D; --ev-base: #F5F7F5; --ev-surface: #FFFFFF;
+    --ev-primary: #1B6E58; --ev-primary-dark: #123F33; --ev-primary-soft: #E3EEEA;
+    --ev-accent: #C98A2E; --ev-accent-soft: #F7EEDD; --ev-accent-ink: #8A5A17;
+    --ev-border: #E1E5E1; --ev-muted: #5C6B65;
+    --ev-danger: #B14E33; --ev-danger-soft: #F7E7E1;
+    --ev-shadow: 0 1px 2px rgba(20,32,29,0.05), 0 4px 14px rgba(20,32,29,0.06);
+  }
+  .ev-root[data-theme="dark"] {
+    --ev-ink: #E8ECE9; --ev-base: #0E1613; --ev-surface: #182320;
+    --ev-primary: #34A184; --ev-primary-dark: #1B5C4A; --ev-primary-soft: #17332B;
+    --ev-accent: #D9A54B; --ev-accent-soft: #2E2515; --ev-accent-ink: #E8C179;
+    --ev-border: #2A342F; --ev-muted: #8B9992;
+    --ev-danger: #E2775A; --ev-danger-soft: #3A211A;
+    --ev-shadow: 0 1px 2px rgba(0,0,0,0.35), 0 4px 16px rgba(0,0,0,0.4);
+  }
+`;
+function useTheme() {
+  const [theme, setTheme] = useState("light");
+  React.useEffect(() => {
+    try {
+      if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) setTheme("dark");
+    } catch (_) {}
+  }, []);
+  return [theme, setTheme];
+}
+function ThemeToggle({ theme, setTheme, compact }) {
+  return (
+    <button
+      onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+      aria-label="Cambiar tema"
+      className="ev-btn p-2 rounded-lg"
+      style={{ border: `1px solid ${T.border}`, color: T.muted }}
+    >
+      {theme === "dark" ? <Sun size={compact ? 14 : 16} /> : <Moon size={compact ? 14 : 16} />}
+    </button>
+  );
+}
+const APP_BASE_CSS = `
+  @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+  .ev-mono { font-family:'JetBrains Mono', monospace; }
+  .ev-display { font-family:'Space Grotesk', sans-serif; letter-spacing:-0.01em; }
+  .ev-scroll::-webkit-scrollbar{ width:8px; height:8px; }
+  .ev-scroll::-webkit-scrollbar-thumb{ background:${T.border}; border-radius:8px; }
+  .ev-card{ background:${T.surface}; border:1px solid ${T.border}; border-radius:14px; box-shadow:${T.shadow}; transition:background-color .2s, border-color .2s; }
+  .ev-btn{ display:inline-flex; align-items:center; gap:6px; border-radius:9px; font-weight:600; transition:all .15s ease; cursor:pointer; }
+  .ev-btn:not(:disabled):hover{ filter:brightness(0.97); }
+  .ev-nav-item:hover{ background:${T.primarySoft}; }
+  input, select, textarea { transition: border-color .15s ease, box-shadow .15s ease; }
+  input:focus, select:focus, textarea:focus { outline:none; border-color:${T.primary} !important; box-shadow:0 0 0 3px color-mix(in srgb, ${T.primary} 18%, transparent); }
+`;
+
 const ACTIVITY_TYPES = {
-  terapeutico: { label: "Grupo Terapéutico", color: "#1F6F5C" },
-  turno_dia: { label: "Turno Día", color: "#3B6FA0" },
-  turno_noche: { label: "Turno Noche", color: "#4A3F73" },
-  administrativo: { label: "Administrativo", color: "#E8A33D" },
-  capacitacion: { label: "Capacitación", color: "#C1553B" },
+  terapeutico: { label: "Grupo Terapéutico", color: "#2E8B74" },
+  turno_dia: { label: "Turno Día", color: "#4C8FC9" },
+  turno_noche: { label: "Turno Noche", color: "#8577C9" },
+  administrativo: { label: "Administrativo", color: "#DDA23E" },
+  capacitacion: { label: "Capacitación", color: "#D9704F" },
   reunion: { label: "Reunión", color: "#6B7280" },
 };
 
@@ -414,6 +474,7 @@ function useToast() {
 
 /* ============================== ROOT ============================== */
 export default function EvolucionaApp() {
+  const [theme, setTheme] = useTheme();
   const [session, setSession] = useState(null); // { email, rol }
   const [view, setView] = useState("dashboard");
   const [events, setEvents] = useState([]);
@@ -474,7 +535,7 @@ export default function EvolucionaApp() {
   }
 
   if (!session) {
-    return <LoginScreen onLogin={(s) => setSession(s)} />;
+    return <LoginScreen onLogin={(s) => setSession(s)} theme={theme} setTheme={setTheme} />;
   }
 
   const weekStart = addDays(monday, weekOffset * 7);
@@ -691,14 +752,17 @@ export default function EvolucionaApp() {
 
   if (loading) {
     return (
-      <div style={{ background: T.base, color: T.muted }} className="w-full min-h-[720px] flex items-center justify-center text-[13.5px]">
+      <div data-theme={theme} style={{ background: T.base, color: T.muted }} className="ev-root w-full min-h-[720px] flex items-center justify-center text-[13.5px]">
+        <style>{THEME_CSS}</style>
         Conectando con Supabase…
       </div>
     );
   }
   if (loadError) {
     return (
-      <div style={{ background: T.base }} className="w-full min-h-[720px] flex items-center justify-center p-6">
+      <div data-theme={theme} style={{ background: T.base }} className="ev-root w-full min-h-[720px] flex items-center justify-center p-6">
+        <style>{THEME_CSS}</style>
+        <style>{APP_BASE_CSS}</style>
         <div className="ev-card p-6 max-w-md text-center" style={{ background: T.surface }}>
           <AlertTriangle size={22} style={{ color: T.danger }} className="mx-auto mb-3" />
           <p className="font-semibold mb-2" style={{ color: T.ink }}>No se pudo conectar a Supabase</p>
@@ -714,18 +778,13 @@ export default function EvolucionaApp() {
 
   return (
     <div
+      data-theme={theme}
       style={{ background: T.base, color: T.ink, fontFamily: "'Inter', sans-serif" }}
-      className="w-full min-h-[720px] flex text-[14px]"
+      className="ev-root w-full min-h-[720px] flex text-[14px] transition-colors duration-200"
     >
+      <style>{THEME_CSS}</style>
+      <style>{APP_BASE_CSS}</style>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
-        .ev-mono { font-family:'JetBrains Mono', monospace; }
-        .ev-display { font-family:'Space Grotesk', sans-serif; }
-        .ev-scroll::-webkit-scrollbar{ width:8px; height:8px; }
-        .ev-scroll::-webkit-scrollbar-thumb{ background:${T.border}; border-radius:8px; }
-        .ev-card{ background:${T.surface}; border:1px solid ${T.border}; border-radius:14px; }
-        .ev-btn{ display:inline-flex; align-items:center; gap:6px; border-radius:9px; font-weight:600; transition:all .15s ease; cursor:pointer; }
-        .ev-nav-item:hover{ background:${T.primarySoft}; }
         @media print {
           .no-print{ display:none !important; }
           .print-area{ box-shadow:none !important; border:none !important; }
@@ -798,7 +857,7 @@ export default function EvolucionaApp() {
           <div className="flex items-center gap-3 shrink-0">
             <span
               className="hidden sm:inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold"
-              style={{ background: isMaestro ? T.primarySoft : T.accentSoft, color: isMaestro ? T.primaryDark : "#8A5A17" }}
+              style={{ background: isMaestro ? T.primarySoft : T.accentSoft, color: isMaestro ? T.primaryDark : T.accentInk }}
             >
               {isMaestro ? <Shield size={11} /> : <Lock size={11} />} {isMaestro ? "Maestro" : "Lector"}
             </span>
@@ -811,6 +870,7 @@ export default function EvolucionaApp() {
             <button onClick={handleLogout} className="ev-btn px-3 py-2 text-[12.5px]" style={{ border: `1px solid ${T.border}` }}>
               Cerrar sesión
             </button>
+            <ThemeToggle theme={theme} setTheme={setTheme} />
           </div>
         </header>
 
@@ -836,7 +896,7 @@ export default function EvolucionaApp() {
 }
 
 /* ============================== LOGIN ============================== */
-function LoginScreen({ onLogin }) {
+function LoginScreen({ onLogin, theme, setTheme }) {
   const [mode, setMode] = useState("signin"); // 'signin' | 'signup'
   const [form, setForm] = useState({ nombre: "", correo: "", password: "" });
   const [loading, setLoading] = useState(false);
@@ -893,8 +953,12 @@ function LoginScreen({ onLogin }) {
   }
 
   return (
-    <div style={{ background: T.base, fontFamily: "'Inter', sans-serif" }} className="w-full min-h-[720px] flex items-center justify-center p-6">
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700&family=Inter:wght@400;500;600&display=swap');`}</style>
+    <div data-theme={theme} style={{ background: T.base, fontFamily: "'Inter', sans-serif" }} className="ev-root relative w-full min-h-[720px] flex items-center justify-center p-6 transition-colors duration-200">
+      <style>{THEME_CSS}</style>
+      <style>{APP_BASE_CSS}</style>
+      <div className="absolute top-5 right-5">
+        <ThemeToggle theme={theme} setTheme={setTheme} />
+      </div>
       <form onSubmit={submit} className="ev-card w-full max-w-sm p-6" style={{ background: T.surface }}>
         <div className="flex items-center gap-2 mb-1">
           <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: T.primary }}>
@@ -923,7 +987,7 @@ function LoginScreen({ onLogin }) {
         </div>
 
         {error && <p className="text-[12px] mt-3 rounded-lg px-3 py-2" style={{ background: T.dangerSoft, color: T.danger }}>{error}</p>}
-        {notice && <p className="text-[12px] mt-3 rounded-lg px-3 py-2" style={{ background: T.accentSoft, color: "#8A5A17" }}>{notice}</p>}
+        {notice && <p className="text-[12px] mt-3 rounded-lg px-3 py-2" style={{ background: T.accentSoft, color: T.accentInk }}>{notice}</p>}
 
         <button type="submit" disabled={loading} className="ev-btn w-full justify-center px-4 py-2.5 text-[13px] text-white mt-4 disabled:opacity-50" style={{ background: T.primary }}>
           {loading ? "Un momento…" : mode === "signin" ? "Iniciar sesión" : "Crear cuenta"}
@@ -1026,7 +1090,7 @@ function Dashboard({ ctx }) {
           </h3>
           <div className="flex flex-col gap-2.5">
             {alerts.map((a, i) => (
-              <div key={i} className="rounded-lg px-3 py-2.5 text-[12.5px] leading-snug" style={{ background: a.level === "danger" ? T.dangerSoft : T.accentSoft, color: a.level === "danger" ? T.danger : "#8A5A17" }}>
+              <div key={i} className="rounded-lg px-3 py-2.5 text-[12.5px] leading-snug" style={{ background: a.level === "danger" ? T.dangerSoft : T.accentSoft, color: a.level === "danger" ? T.danger : T.accentInk }}>
                 {a.text}
               </div>
             ))}
@@ -1307,7 +1371,7 @@ function TurnosCalendario({ ctx }) {
     <div className="flex flex-col gap-4">
       <ReadOnlyBanner isMaestro={isMaestro} />
       {elegibles.length === 0 && (
-        <div className="flex items-center gap-2 px-3.5 py-2.5 rounded-lg text-[12.5px]" style={{ background: T.accentSoft, color: "#8A5A17" }}>
+        <div className="flex items-center gap-2 px-3.5 py-2.5 rounded-lg text-[12.5px]" style={{ background: T.accentSoft, color: T.accentInk }}>
           <AlertTriangle size={14} /> Ningún colaborador tiene alguno de los cargos configurados para turnos — revísalos en Configuración o edítalos en Personal.
         </div>
       )}
@@ -1526,7 +1590,7 @@ function GenerarTurnosModal({ ctx, onClose }) {
               </p>
             )}
             {resultado.faltantes.length > 0 && (
-              <div className="mb-3 px-3 py-2.5 rounded-lg text-[12px]" style={{ background: T.accentSoft, color: "#8A5A17" }}>
+              <div className="mb-3 px-3 py-2.5 rounded-lg text-[12px]" style={{ background: T.accentSoft, color: T.accentInk }}>
                 <p className="font-semibold mb-1">No alcanzó el personal para {resultado.faltantes.length} turno(s):</p>
                 {resultado.faltantes.slice(0, 6).map((f, i) => (
                   <p key={i}>{new Date(`${f.date}T00:00:00`).toLocaleDateString("es-CO", { weekday: "short", day: "numeric", month: "short" })} · {ACTIVITY_TYPES[f.type].label} · {f.motivo || `faltan ${f.faltan}`}</p>
@@ -1570,7 +1634,7 @@ function GenerarTurnosModal({ ctx, onClose }) {
 function ReadOnlyBanner({ isMaestro }) {
   if (isMaestro) return null;
   return (
-    <div className="flex items-center gap-2 px-3.5 py-2.5 rounded-lg text-[12.5px]" style={{ background: T.accentSoft, color: "#8A5A17" }}>
+    <div className="flex items-center gap-2 px-3.5 py-2.5 rounded-lg text-[12.5px]" style={{ background: T.accentSoft, color: T.accentInk }}>
       <Lock size={14} /> Estás en modo lectura. Solo un usuario Maestro puede crear, editar o eliminar registros.
     </div>
   );
@@ -1757,7 +1821,7 @@ function Personal({ ctx }) {
         )}
       </div>
       {!isMaestro && (
-        <div className="flex items-center gap-2 px-5 py-2.5 text-[12px]" style={{ background: T.accentSoft, color: "#8A5A17" }}>
+        <div className="flex items-center gap-2 px-5 py-2.5 text-[12px]" style={{ background: T.accentSoft, color: T.accentInk }}>
           <Lock size={13} /> Modo lectura: solo un usuario Maestro puede registrar o editar personal.
         </div>
       )}
@@ -1880,7 +1944,7 @@ function Configuracion({ ctx }) {
   return (
     <div className="flex flex-col gap-5 max-w-2xl">
       {!isMaestro && (
-        <div className="flex items-center gap-2 px-3.5 py-2.5 rounded-lg text-[12.5px]" style={{ background: T.accentSoft, color: "#8A5A17" }}>
+        <div className="flex items-center gap-2 px-3.5 py-2.5 rounded-lg text-[12.5px]" style={{ background: T.accentSoft, color: T.accentInk }}>
           <Lock size={14} /> Modo lectura: solo un usuario Maestro puede cambiar estas reglas.
         </div>
       )}
