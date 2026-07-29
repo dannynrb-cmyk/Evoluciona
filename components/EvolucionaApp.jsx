@@ -189,6 +189,9 @@ async function updatePersonalRemote(form) {
   const [row] = await sb(`personal?id=eq.${form.id}`, { method: "PATCH", body: JSON.stringify(personalPayload(form)) });
   return mapPersonal(row);
 }
+async function deletePersonalRemote(id) {
+  await sb(`personal?id=eq.${id}`, { method: "DELETE", prefer: "return=minimal" });
+}
 async function insertBibliotecaRemote(form) {
   const [row] = await sb("biblioteca_actividades", { method: "POST", body: JSON.stringify({ nombre: form.nombre, tipo: form.tipo, metodologia: form.metodologia || null, objetivos: form.objetivos || null }) });
   return mapBiblioteca(row);
@@ -248,6 +251,12 @@ const NAV = [
 ];
 const TURNO_TYPES = ["turno_dia", "turno_noche"];
 const ACTIVIDAD_TYPES = Object.keys(ACTIVITY_TYPES).filter((k) => !TURNO_TYPES.includes(k));
+// El módulo de Turnos solo programa estos dos cargos.
+const TURNO_CARGOS = ["operador terapéutico", "auxiliar de enfermería"];
+function esCargoDeTurno(cargo) {
+  const c = (cargo || "").toLowerCase();
+  return TURNO_CARGOS.some((t) => c.includes(t));
+}
 
 /* ============================== HELPERS ============================== */
 const DIA_LABEL = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
@@ -356,8 +365,15 @@ export default function EvolucionaApp() {
   async function saveEvent(form) {
     setSaving(true);
     try {
-      if (modal?.mode === "edit") await updateEventRemote(form);
-      else await insertEventRemote(form);
+      if (modal?.mode === "edit") {
+        await updateEventRemote(form);
+      } else if (TURNO_TYPES.includes(form.type) && form.personalIds?.length > 0) {
+        for (const pid of form.personalIds) {
+          await insertEventRemote({ ...form, personalId: pid });
+        }
+      } else {
+        await insertEventRemote(form);
+      }
       setEvents(await fetchEventsRemote());
       setModal(null);
       showToast(modal?.mode === "edit" ? "Actualizado en Supabase" : "Guardado en Supabase");
@@ -403,6 +419,15 @@ export default function EvolucionaApp() {
       setSaving(false);
     }
   }
+  async function deletePersonal(id) {
+    try {
+      await deletePersonalRemote(id);
+      setPersonal((prev) => prev.filter((p) => p.id !== id));
+      showToast("Persona eliminada de Supabase", "warn");
+    } catch (err) {
+      showToast(`No se pudo eliminar: ${err.message}`, "warn");
+    }
+  }
   async function saveBiblioteca(form) {
     setSaving(true);
     try {
@@ -433,7 +458,7 @@ export default function EvolucionaApp() {
     events, setEvents, personal, setPersonal, biblioteca, weekStart, weekDays, weekOffset, setWeekOffset,
     calMode, setCalMode, monthOffset, setMonthOffset, setModal, detail, setDetail, deleteEvent,
     toggleEstado, showToast, setView, saving, isMaestro, session,
-    personalModal, setPersonalModal, savePersonal,
+    personalModal, setPersonalModal, savePersonal, deletePersonal,
     bibModal, setBibModal, saveBiblioteca, deleteBiblioteca,
   };
 
@@ -852,30 +877,37 @@ function ActividadesCalendario({ ctx }) {
 
 /* ============================== TURNOS (calendario) ============================== */
 function TurnosCalendario({ ctx }) {
-  const { calMode, setCalMode, isMaestro, events, personal } = ctx;
+  const { isMaestro, events, personal, monthOffset, setMonthOffset, setDetail } = ctx;
   const turnos = events.filter((e) => TURNO_TYPES.includes(e.type));
-  const porPersona = personal.map((p) => {
+
+  const elegibles = personal.filter((p) => esCargoDeTurno(p.cargo));
+  const baseParaResumen = elegibles.length > 0 ? elegibles : personal;
+  const porPersona = baseParaResumen.map((p) => {
     const suyos = turnos.filter((t) => t.personalId === p.id);
     const horas = suyos.reduce((a, t) => a + (t.end - t.start), 0);
     return { ...p, turnos: suyos.length, horasAsignadas: horas };
   });
 
+  const base = new Date(TODAY.getFullYear(), TODAY.getMonth() + monthOffset, 1);
+  const gridStart = getMonday(new Date(base.getFullYear(), base.getMonth(), 1));
+  const cells = Array.from({ length: 42 }, (_, i) => addDays(gridStart, i));
+  const todayISO = toISO(TODAY);
+  const lastCellInMonth = cells.reduce((acc, d, i) => (d.getMonth() === base.getMonth() ? i : acc), 0);
+  const visibleCells = cells.slice(0, Math.ceil((lastCellInMonth + 1) / 7) * 7);
+
+  function chipsFor(dISO, tipo) {
+    return turnos.filter((t) => t.date === dISO && t.type === tipo);
+  }
+
   return (
     <div className="flex flex-col gap-4">
       <ReadOnlyBanner isMaestro={isMaestro} />
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-1 p-1 rounded-lg" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
-          {["semana", "mes"].map((m) => (
-            <button
-              key={m}
-              onClick={() => setCalMode(m)}
-              className="ev-btn px-3.5 py-1.5 text-[12.5px] capitalize"
-              style={{ background: calMode === m ? T.primary : "transparent", color: calMode === m ? "#fff" : T.ink }}
-            >
-              {m}
-            </button>
-          ))}
+      {elegibles.length === 0 && (
+        <div className="flex items-center gap-2 px-3.5 py-2.5 rounded-lg text-[12.5px]" style={{ background: T.accentSoft, color: "#8A5A17" }}>
+          <AlertTriangle size={14} /> Ningún colaborador tiene el cargo "Operador terapéutico" o "Auxiliar de enfermería" — edítalos en Personal para que aparezcan aquí.
         </div>
+      )}
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <Legend types={TURNO_TYPES} />
         {isMaestro && (
           <button
@@ -887,33 +919,84 @@ function TurnosCalendario({ ctx }) {
           </button>
         )}
       </div>
-      {calMode === "semana" ? <WeekView ctx={ctx} types={TURNO_TYPES} /> : <MonthView ctx={ctx} types={TURNO_TYPES} />}
 
       <div className="ev-card overflow-hidden">
-        <div className="px-5 py-4 border-b" style={{ borderColor: T.border }}>
-          <h3 className="ev-display font-semibold text-[15px]">Horas asignadas por persona · semana actual</h3>
+        <div className="flex items-center justify-between px-4 py-3 border-b" style={{ borderColor: T.border }}>
+          <button className="p-1.5 rounded-lg" style={{ border: `1px solid ${T.border}` }} onClick={() => setMonthOffset((m) => m - 1)}>
+            <ChevronLeft size={16} />
+          </button>
+          <p className="ev-display font-semibold text-[14px] capitalize">{MES_LABEL[base.getMonth()]} {base.getFullYear()}</p>
+          <button className="p-1.5 rounded-lg" style={{ border: `1px solid ${T.border}` }} onClick={() => setMonthOffset((m) => m + 1)}>
+            <ChevronRight size={16} />
+          </button>
         </div>
-        <div className="divide-y ev-scroll" style={{ borderColor: T.border }}>
-          {porPersona.filter((p) => p.turnos > 0).map((p) => {
-            const pct = Math.min(100, Math.round((p.horasAsignadas / p.horas) * 100));
-            const over = p.horasAsignadas > p.horas;
+        <div className="grid grid-cols-7 text-center py-2 border-b" style={{ borderColor: T.border }}>
+          {DIA_LABEL.map((d) => <p key={d} className="text-[11px] font-medium" style={{ color: T.muted }}>{d}</p>)}
+        </div>
+        <div className="grid grid-cols-7 overflow-x-auto ev-scroll" style={{ minWidth: 900 }}>
+          {visibleCells.map((d, i) => {
+            const dISO = toISO(d);
+            const inMonth = d.getMonth() === base.getMonth();
+            const dia = chipsFor(dISO, "turno_dia");
+            const noche = chipsFor(dISO, "turno_noche");
             return (
-              <div key={p.id} className="px-5 py-3.5">
-                <div className="flex items-center justify-between mb-1.5">
-                  <span className="font-medium text-[13px]">{p.nombre}</span>
-                  <span className="ev-mono text-[12px]" style={{ color: over ? T.danger : T.muted }}>{p.horasAsignadas}h / {p.horas}h</span>
-                </div>
-                <div className="h-1.5 rounded-full" style={{ background: T.border }}>
-                  <div className="h-1.5 rounded-full" style={{ width: `${pct}%`, background: over ? T.danger : T.primary }} />
-                </div>
+              <div
+                key={i}
+                onClick={() => isMaestro && ctx.setModal({ mode: "new", event: null, defaultType: "turno_dia", prefill: { date: dISO, start: 7, end: 17 } })}
+                className={`border-b border-r p-1.5 flex flex-col gap-1 min-h-[112px] ${isMaestro ? "cursor-pointer hover:bg-black/[0.02]" : ""}`}
+                style={{ borderColor: T.border, opacity: inMonth ? 1 : 0.4 }}
+              >
+                <span className="ev-display text-[11.5px] font-semibold w-5 h-5 flex items-center justify-center rounded-full shrink-0" style={{ background: dISO === todayISO ? T.primary : "transparent", color: dISO === todayISO ? "#fff" : T.ink }}>
+                  {d.getDate()}
+                </span>
+                <TurnoMiniBox tipo="turno_dia" chips={dia} onChipClick={setDetail} />
+                <TurnoMiniBox tipo="turno_noche" chips={noche} onChipClick={setDetail} />
               </div>
             );
           })}
-          {porPersona.filter((p) => p.turnos > 0).length === 0 && (
-            <p className="px-5 py-6 text-[12.5px] text-center" style={{ color: T.muted }}>Aún no hay turnos asignados.</p>
+        </div>
+      </div>
+
+      <div className="ev-card overflow-hidden max-w-md">
+        <div className="px-4 py-3 border-b" style={{ borderColor: T.border }}>
+          <h3 className="ev-display font-semibold text-[13.5px]">Horas por colaborador · semana actual</h3>
+        </div>
+        <div className="divide-y" style={{ borderColor: T.border }}>
+          {porPersona.map((p) => {
+            const over = p.horasAsignadas > p.horas;
+            return (
+              <div key={p.id} className="flex items-center justify-between px-4 py-2 text-[12.5px]">
+                <span className="font-medium">{p.nombre}</span>
+                <span className="ev-mono" style={{ color: over ? T.danger : T.muted }}>{p.horasAsignadas}h / {p.horas}h</span>
+              </div>
+            );
+          })}
+          {porPersona.length === 0 && (
+            <p className="px-4 py-5 text-[12px] text-center" style={{ color: T.muted }}>No hay colaboradores registrados para turnos.</p>
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function TurnoMiniBox({ tipo, chips, onChipClick }) {
+  const color = ACTIVITY_TYPES[tipo].color;
+  return (
+    <div className="rounded px-1 py-0.5" style={{ background: `${color}14` }}>
+      <p className="text-[8.5px] font-semibold uppercase tracking-wide" style={{ color }}>{tipo === "turno_dia" ? "Día" : "Noche"}</p>
+      {chips.length === 0 && <p className="text-[9px]" style={{ color: T.muted }}>—</p>}
+      {chips.map((c) => (
+        <button
+          key={c.id}
+          onClick={(ev) => { ev.stopPropagation(); onChipClick(c); }}
+          className="block w-full text-left text-[9.5px] leading-tight truncate hover:underline"
+          style={{ color: T.ink }}
+          title={`${personName(c.personalId)} · ${c.end - c.start}h`}
+        >
+          {personName(c.personalId)} <span className="ev-mono" style={{ color: T.muted }}>{c.end - c.start}h</span>
+        </button>
+      ))}
     </div>
   );
 }
@@ -1088,7 +1171,12 @@ function MonthView({ ctx, types }) {
 
 /* ============================== PERSONAL ============================== */
 function Personal({ ctx }) {
-  const { personal, toggleEstado, isMaestro, setPersonalModal } = ctx;
+  const { personal, toggleEstado, isMaestro, setPersonalModal, deletePersonal } = ctx;
+  function confirmDelete(p) {
+    if (window.confirm(`¿Eliminar a ${p.nombre}? Sus turnos y actividades pasadas quedarán sin responsable asignado.`)) {
+      deletePersonal(p.id);
+    }
+  }
   return (
     <div className="ev-card overflow-hidden">
       <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderColor: T.border }}>
@@ -1136,6 +1224,9 @@ function Personal({ ctx }) {
                       </button>
                       <button onClick={() => toggleEstado(p.id)} className="ev-btn text-[12px] px-2.5 py-1" style={{ border: `1px solid ${T.border}` }}>
                         {p.estado === "activo" ? "Desactivar" : "Activar"}
+                      </button>
+                      <button onClick={() => confirmDelete(p)} className="ev-btn text-[12px] px-2.5 py-1" style={{ background: T.dangerSoft, color: T.danger }}>
+                        <Trash2 size={12} /> Eliminar
                       </button>
                     </div>
                   )}
@@ -1241,14 +1332,18 @@ function EventModal({ ctx, onClose, onSave, initial }) {
     title: base.title || "",
     type: base.type || initial.defaultType || allowedTypes[0],
     date: base.date || pre.date || toISO(TODAY),
-    start: base.start ?? pre.start ?? 8,
-    end: base.end ?? pre.end ?? 9,
+    start: base.start ?? pre.start ?? (TURNO_TYPES.includes(base.type || initial.defaultType) ? 7 : 8),
+    end: base.end ?? pre.end ?? (TURNO_TYPES.includes(base.type || initial.defaultType) ? 17 : 9),
     personalId: base.personalId || "",
+    personalIds: [],
     metodologia: base.metodologia || "",
     objetivos: base.objetivos || "",
   });
   const selected = personById(form.personalId);
   const esTurno = form.type.startsWith("turno_");
+  const esTurnoNuevo = esTurno && initial.mode !== "edit";
+  const elegibles = personal.filter((p) => esCargoDeTurno(p.cargo));
+  const opcionesTurno = elegibles.length > 0 ? elegibles : personal;
 
   function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
   function usarBiblioteca(id) {
@@ -1256,13 +1351,20 @@ function EventModal({ ctx, onClose, onSave, initial }) {
     if (!item) return;
     setForm((f) => ({ ...f, title: item.nombre, type: item.tipo, metodologia: item.metodologia, objetivos: item.objetivos }));
   }
+  function toggleTurnoPersona(id) {
+    setForm((f) => {
+      const has = f.personalIds.includes(id);
+      const next = has ? f.personalIds.filter((x) => x !== id) : [...f.personalIds, id];
+      return { ...f, personalIds: next };
+    });
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       <div className="ev-card w-full max-w-md p-5 max-h-[90vh] overflow-y-auto ev-scroll">
         <div className="flex items-center justify-between mb-4">
           <h3 className="ev-display font-semibold text-[16px]">
-            {initial.mode === "edit" ? "Editar" : "Nueva"} {esTurno ? "turno" : "actividad"}
+            {initial.mode === "edit" ? "Editar" : "Nuevo"} {esTurno ? "turno" : "actividad"}
           </h3>
           <button onClick={onClose}><X size={18} /></button>
         </div>
@@ -1275,15 +1377,11 @@ function EventModal({ ctx, onClose, onSave, initial }) {
               </select>
             </Field>
           )}
-          <Field label="Nombre de la actividad">
-            <input
-              value={esTurno ? ACTIVITY_TYPES[form.type].label : form.title}
-              disabled={esTurno}
-              onChange={(e) => set("title", e.target.value)}
-              placeholder="Ej. Grupo Terapéutico"
-              style={{ ...inputStyle, opacity: esTurno ? 0.6 : 1 }}
-            />
-          </Field>
+          {!esTurno && (
+            <Field label="Nombre de la actividad">
+              <input value={form.title} onChange={(e) => set("title", e.target.value)} placeholder="Ej. Grupo Terapéutico" style={inputStyle} />
+            </Field>
+          )}
           <Field label="Tipo">
             <select
               value={form.type}
@@ -1301,17 +1399,27 @@ function EventModal({ ctx, onClose, onSave, initial }) {
             <Field label="Fecha">
               <input type="date" value={form.date} onChange={(e) => set("date", e.target.value)} style={inputStyle} />
             </Field>
-            <Field label="Responsable">
-              <select
-                value={form.personalId}
-                onChange={(e) => set("personalId", e.target.value)}
-                style={inputStyle}
-              >
-                <option value="">Sin asignar</option>
-                {personal.map((p) => <option key={p.id} value={p.id}>{p.nombre}</option>)}
-              </select>
-            </Field>
+            {!esTurnoNuevo && (
+              <Field label="Responsable">
+                <select value={form.personalId} onChange={(e) => set("personalId", e.target.value)} style={inputStyle}>
+                  <option value="">Sin asignar</option>
+                  {(esTurno ? opcionesTurno : personal).map((p) => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+                </select>
+              </Field>
+            )}
           </div>
+          {esTurnoNuevo && (
+            <Field label="Personal en este turno (puedes elegir varios)">
+              <div className="flex flex-col gap-1.5 max-h-36 overflow-y-auto ev-scroll rounded-lg p-2" style={{ border: `1px solid ${T.border}` }}>
+                {opcionesTurno.map((p) => (
+                  <label key={p.id} className="flex items-center gap-2 text-[12.5px]">
+                    <input type="checkbox" checked={form.personalIds.includes(p.id)} onChange={() => toggleTurnoPersona(p.id)} />
+                    {p.nombre} <span style={{ color: T.muted }}>· {p.cargo}</span>
+                  </label>
+                ))}
+              </div>
+            </Field>
+          )}
           <div className="grid grid-cols-2 gap-3">
             <Field label="Hora inicio">
               <input type="number" min={0} max={23} value={form.start} onChange={(e) => set("start", parseFloat(e.target.value))} style={inputStyle} />
@@ -1320,10 +1428,12 @@ function EventModal({ ctx, onClose, onSave, initial }) {
               <input type="number" min={0} max={32} value={form.end} onChange={(e) => set("end", parseFloat(e.target.value))} style={inputStyle} />
             </Field>
           </div>
-          <div className="grid grid-cols-2 gap-3 text-[12.5px]" style={{ color: T.muted }}>
-            <p>Cargo: <span style={{ color: T.ink }}>{selected?.cargo || "—"}</span></p>
-            <p>Área: <span style={{ color: T.ink }}>{selected?.area || "—"}</span></p>
-          </div>
+          {!esTurnoNuevo && (
+            <div className="grid grid-cols-2 gap-3 text-[12.5px]" style={{ color: T.muted }}>
+              <p>Cargo: <span style={{ color: T.ink }}>{selected?.cargo || "—"}</span></p>
+              <p>Área: <span style={{ color: T.ink }}>{selected?.area || "—"}</span></p>
+            </div>
+          )}
           {!esTurno && (
             <>
               <Field label="Metodología">
@@ -1338,8 +1448,8 @@ function EventModal({ ctx, onClose, onSave, initial }) {
         <div className="flex justify-end gap-2 mt-5">
           <button onClick={onClose} className="ev-btn px-4 py-2 text-[13px]" style={{ border: `1px solid ${T.border}` }}>Cancelar</button>
           <button
-            onClick={() => onSave({ ...form, start: Number(form.start), end: Number(form.end) })}
-            disabled={!form.title || saving}
+            onClick={() => onSave({ ...form, title: esTurno ? ACTIVITY_TYPES[form.type].label : form.title, start: Number(form.start), end: Number(form.end) })}
+            disabled={saving || (esTurno ? false : !form.title)}
             className="ev-btn px-4 py-2 text-[13px] text-white disabled:opacity-40"
             style={{ background: T.primary }}
           >
