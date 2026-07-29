@@ -217,7 +217,7 @@ async function updateUsuarioRolRemote(id, rol) {
 }
 
 /* ============================== DATA ============================== */
-const TODAY = new Date(2026, 6, 28); // martes 28 jul 2026
+const TODAY = (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; })(); // fecha real de hoy
 let PERSONAL_STATE = []; // se llena al cargar desde Supabase; usado por personName/personById
 
 function toISO(d) {
