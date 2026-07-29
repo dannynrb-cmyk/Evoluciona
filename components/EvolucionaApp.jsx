@@ -19,6 +19,9 @@ import {
   Pencil,
   Sparkles,
   ArrowRight,
+  BookOpen,
+  Lock,
+  Shield,
 } from "lucide-react";
 import {
   BarChart,
@@ -98,7 +101,11 @@ const authSignUp = (email, password) => authRequest("signup", { email, password 
 
 
 function mapActividad(row) {
-  return { id: row.id, table: "actividades", date: row.fecha, title: row.nombre, type: row.tipo, start: Number(row.hora_inicio), end: Number(row.hora_fin), personalId: row.responsable_id };
+  return {
+    id: row.id, table: "actividades", date: row.fecha, title: row.nombre, type: row.tipo,
+    start: Number(row.hora_inicio), end: Number(row.hora_fin), personalId: row.responsable_id,
+    metodologia: row.metodologia || "", objetivos: row.objetivos || "",
+  };
 }
 function mapTurno(row) {
   return {
@@ -109,18 +116,30 @@ function mapTurno(row) {
   };
 }
 function mapPersonal(row) {
-  return { id: row.id, nombre: row.nombre, cargo: row.cargo, area: row.area, horas: Number(row.horas_semana), estado: row.estado };
+  return {
+    id: row.id, nombre: row.nombre, cargo: row.cargo, area: row.area,
+    tipoContrato: row.tipo_contrato, horas: Number(row.horas_semana),
+    disponibilidad: row.disponibilidad, estado: row.estado,
+  };
+}
+function mapBiblioteca(row) {
+  return { id: row.id, nombre: row.nombre, tipo: row.tipo, metodologia: row.metodologia || "", objetivos: row.objetivos || "" };
+}
+function mapUsuario(row) {
+  return { id: row.id, nombre: row.nombre, correo: row.correo, rol: row.rol };
 }
 
 async function fetchAllRemote() {
-  const [personalRows, actRows, turnRows] = await Promise.all([
+  const [personalRows, actRows, turnRows, bibRows] = await Promise.all([
     sb("personal?select=*&order=nombre"),
     sb("actividades?select=*"),
     sb("turnos?select=*"),
+    sb("biblioteca_actividades?select=*&order=nombre"),
   ]);
   return {
     personal: personalRows.map(mapPersonal),
     events: [...actRows.map(mapActividad), ...turnRows.map(mapTurno)],
+    biblioteca: bibRows.map(mapBiblioteca),
   };
 }
 async function fetchEventsRemote() {
@@ -131,7 +150,7 @@ function eventPayload(form) {
   const isTurno = form.type === "turno_dia" || form.type === "turno_noche";
   return isTurno
     ? { fecha: form.date, tipo_turno: form.type === "turno_dia" ? "dia" : "noche", hora_inicio: form.start, hora_fin: form.end, personal_id: form.personalId || null }
-    : { nombre: form.title, tipo: form.type, fecha: form.date, hora_inicio: form.start, hora_fin: form.end, responsable_id: form.personalId || null };
+    : { nombre: form.title, tipo: form.type, fecha: form.date, hora_inicio: form.start, hora_fin: form.end, responsable_id: form.personalId || null, metodologia: form.metodologia || null, objetivos: form.objetivos || null };
 }
 async function insertEventRemote(form) {
   const isTurno = form.type === "turno_dia" || form.type === "turno_noche";
@@ -152,6 +171,46 @@ async function deleteEventRemote(event) {
 async function toggleEstadoRemote(id, current) {
   const [row] = await sb(`personal?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ estado: current === "activo" ? "inactivo" : "activo" }) });
   return mapPersonal(row);
+}
+function personalPayload(form) {
+  return {
+    nombre: form.nombre, cargo: form.cargo, area: form.area,
+    tipo_contrato: form.tipoContrato || "Término indefinido",
+    horas_semana: Number(form.horas) || 0,
+    disponibilidad: form.disponibilidad || "Completa",
+    estado: form.estado || "activo",
+  };
+}
+async function insertPersonalRemote(form) {
+  const [row] = await sb("personal", { method: "POST", body: JSON.stringify(personalPayload(form)) });
+  return mapPersonal(row);
+}
+async function updatePersonalRemote(form) {
+  const [row] = await sb(`personal?id=eq.${form.id}`, { method: "PATCH", body: JSON.stringify(personalPayload(form)) });
+  return mapPersonal(row);
+}
+async function insertBibliotecaRemote(form) {
+  const [row] = await sb("biblioteca_actividades", { method: "POST", body: JSON.stringify({ nombre: form.nombre, tipo: form.tipo, metodologia: form.metodologia || null, objetivos: form.objetivos || null }) });
+  return mapBiblioteca(row);
+}
+async function updateBibliotecaRemote(form) {
+  const [row] = await sb(`biblioteca_actividades?id=eq.${form.id}`, { method: "PATCH", body: JSON.stringify({ nombre: form.nombre, tipo: form.tipo, metodologia: form.metodologia || null, objetivos: form.objetivos || null }) });
+  return mapBiblioteca(row);
+}
+async function deleteBibliotecaRemote(id) {
+  await sb(`biblioteca_actividades?id=eq.${id}`, { method: "DELETE", prefer: "return=minimal" });
+}
+async function fetchOwnUsuario() {
+  const rows = await sb("usuarios?select=*&limit=1");
+  return rows && rows[0] ? mapUsuario(rows[0]) : null;
+}
+async function fetchUsuarios() {
+  const rows = await sb("usuarios?select=*&order=correo");
+  return rows.map(mapUsuario);
+}
+async function updateUsuarioRolRemote(id, rol) {
+  const [row] = await sb(`usuarios?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ rol }) });
+  return mapUsuario(row);
 }
 
 /* ============================== DATA ============================== */
@@ -180,12 +239,15 @@ const nid = () => `tmp${_id++}`; // solo para el formulario mientras se guarda e
 
 const NAV = [
   { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { key: "calendario", label: "Calendario", icon: CalendarDays },
-  { key: "personal", label: "Personal", icon: Users },
+  { key: "actividades", label: "Actividades", icon: CalendarDays },
   { key: "turnos", label: "Turnos", icon: Clock },
+  { key: "biblioteca", label: "Biblioteca", icon: BookOpen },
+  { key: "personal", label: "Personal", icon: Users },
   { key: "reportes", label: "Reportes", icon: FileBarChart },
   { key: "configuracion", label: "Configuración", icon: Settings },
 ];
+const TURNO_TYPES = ["turno_dia", "turno_noche"];
+const ACTIVIDAD_TYPES = Object.keys(ACTIVITY_TYPES).filter((k) => !TURNO_TYPES.includes(k));
 
 /* ============================== HELPERS ============================== */
 const DIA_LABEL = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
@@ -235,20 +297,25 @@ function useToast() {
 
 /* ============================== ROOT ============================== */
 export default function EvolucionaApp() {
-  const [session, setSession] = useState(null); // { email }
+  const [session, setSession] = useState(null); // { email, rol }
   const [view, setView] = useState("dashboard");
   const [events, setEvents] = useState([]);
   const [personal, setPersonal] = useState([]);
+  const [biblioteca, setBiblioteca] = useState([]);
   const [weekOffset, setWeekOffset] = useState(0);
   const [calMode, setCalMode] = useState("semana");
   const [monthOffset, setMonthOffset] = useState(0);
   const [modal, setModal] = useState(null); // {mode:'new'|'edit', event}
   const [detail, setDetail] = useState(null); // event being viewed
+  const [personalModal, setPersonalModal] = useState(null); // {mode, person}
+  const [bibModal, setBibModal] = useState(null); // {mode, item}
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState(null);
   const [saving, setSaving] = useState(false);
   const [toast, showToast] = useToast();
+
+  const isMaestro = session?.rol === "maestro";
 
   React.useEffect(() => {
     PERSONAL_STATE = personal;
@@ -261,6 +328,7 @@ export default function EvolucionaApp() {
       const data = await fetchAllRemote();
       setPersonal(data.personal);
       setEvents(data.events);
+      setBiblioteca(data.biblioteca);
     } catch (err) {
       setLoadError(err.message || "No se pudo conectar a Supabase.");
     } finally {
@@ -274,6 +342,7 @@ export default function EvolucionaApp() {
     setSession(null);
     setEvents([]);
     setPersonal([]);
+    setBiblioteca([]);
     setLoadError(null);
   }
 
@@ -291,7 +360,7 @@ export default function EvolucionaApp() {
       else await insertEventRemote(form);
       setEvents(await fetchEventsRemote());
       setModal(null);
-      showToast(modal?.mode === "edit" ? "Actividad actualizada en Supabase" : "Actividad guardada en Supabase");
+      showToast(modal?.mode === "edit" ? "Actualizado en Supabase" : "Guardado en Supabase");
     } catch (err) {
       showToast(`No se pudo guardar: ${err.message}`, "warn");
     } finally {
@@ -303,7 +372,7 @@ export default function EvolucionaApp() {
       await deleteEventRemote(event);
       setEvents((prev) => prev.filter((e) => e.id !== event.id));
       setDetail(null);
-      showToast("Actividad eliminada de Supabase", "warn");
+      showToast("Eliminado de Supabase", "warn");
     } catch (err) {
       showToast(`No se pudo eliminar: ${err.message}`, "warn");
     }
@@ -318,11 +387,54 @@ export default function EvolucionaApp() {
       showToast(`No se pudo actualizar: ${err.message}`, "warn");
     }
   }
+  async function savePersonal(form) {
+    setSaving(true);
+    try {
+      const saved = personalModal?.mode === "edit" ? await updatePersonalRemote(form) : await insertPersonalRemote(form);
+      setPersonal((prev) => {
+        const exists = prev.some((p) => p.id === saved.id);
+        return exists ? prev.map((p) => (p.id === saved.id ? saved : p)) : [...prev, saved].sort((a, b) => a.nombre.localeCompare(b.nombre));
+      });
+      setPersonalModal(null);
+      showToast(personalModal?.mode === "edit" ? "Persona actualizada" : "Persona registrada");
+    } catch (err) {
+      showToast(`No se pudo guardar: ${err.message}`, "warn");
+    } finally {
+      setSaving(false);
+    }
+  }
+  async function saveBiblioteca(form) {
+    setSaving(true);
+    try {
+      const saved = bibModal?.mode === "edit" ? await updateBibliotecaRemote(form) : await insertBibliotecaRemote(form);
+      setBiblioteca((prev) => {
+        const exists = prev.some((b) => b.id === saved.id);
+        return exists ? prev.map((b) => (b.id === saved.id ? saved : b)) : [...prev, saved];
+      });
+      setBibModal(null);
+      showToast(bibModal?.mode === "edit" ? "Plantilla actualizada" : "Plantilla guardada");
+    } catch (err) {
+      showToast(`No se pudo guardar: ${err.message}`, "warn");
+    } finally {
+      setSaving(false);
+    }
+  }
+  async function deleteBiblioteca(id) {
+    try {
+      await deleteBibliotecaRemote(id);
+      setBiblioteca((prev) => prev.filter((b) => b.id !== id));
+      showToast("Plantilla eliminada", "warn");
+    } catch (err) {
+      showToast(`No se pudo eliminar: ${err.message}`, "warn");
+    }
+  }
 
   const ctx = {
-    events, setEvents, personal, setPersonal, weekStart, weekDays, weekOffset, setWeekOffset,
+    events, setEvents, personal, setPersonal, biblioteca, weekStart, weekDays, weekOffset, setWeekOffset,
     calMode, setCalMode, monthOffset, setMonthOffset, setModal, detail, setDetail, deleteEvent,
-    toggleEstado, showToast, setView, saving,
+    toggleEstado, showToast, setView, saving, isMaestro, session,
+    personalModal, setPersonalModal, savePersonal,
+    bibModal, setBibModal, saveBiblioteca, deleteBiblioteca,
   };
 
   if (loading) {
@@ -432,6 +544,12 @@ export default function EvolucionaApp() {
             <h1 className="ev-display text-[20px] font-semibold capitalize truncate">{view}</h1>
           </div>
           <div className="flex items-center gap-3 shrink-0">
+            <span
+              className="hidden sm:inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold"
+              style={{ background: isMaestro ? T.primarySoft : T.accentSoft, color: isMaestro ? T.primaryDark : "#8A5A17" }}
+            >
+              {isMaestro ? <Shield size={11} /> : <Lock size={11} />} {isMaestro ? "Maestro" : "Lector"}
+            </span>
             <div className="hidden sm:flex items-center gap-2 pl-3 pr-1 py-1 rounded-full" style={{ border: `1px solid ${T.border}` }}>
               <div className="w-7 h-7 rounded-full flex items-center justify-center text-white text-[11px] font-semibold" style={{ background: T.primary }}>
                 {session.email.slice(0, 2).toUpperCase()}
@@ -446,9 +564,10 @@ export default function EvolucionaApp() {
 
         <main className="flex-1 overflow-y-auto ev-scroll p-5 lg:p-8">
           {view === "dashboard" && <Dashboard ctx={ctx} />}
-          {view === "calendario" && <Calendario ctx={ctx} />}
+          {view === "actividades" && <ActividadesCalendario ctx={ctx} />}
+          {view === "turnos" && <TurnosCalendario ctx={ctx} />}
+          {view === "biblioteca" && <Biblioteca ctx={ctx} />}
           {view === "personal" && <Personal ctx={ctx} />}
-          {view === "turnos" && <Turnos ctx={ctx} />}
           {view === "reportes" && <Reportes ctx={ctx} />}
           {view === "configuracion" && <Configuracion ctx={ctx} />}
         </main>
@@ -456,6 +575,8 @@ export default function EvolucionaApp() {
 
       {modal && <EventModal ctx={ctx} onClose={() => setModal(null)} onSave={saveEvent} initial={modal} />}
       {detail && <DetailDrawer ctx={ctx} event={detail} onClose={() => setDetail(null)} onEdit={() => { setModal({ mode: "edit", event: detail }); setDetail(null); }} onDelete={() => deleteEvent(detail)} />}
+      {personalModal && <PersonalModal ctx={ctx} onClose={() => setPersonalModal(null)} initial={personalModal} />}
+      {bibModal && <BibliotecaModal ctx={ctx} onClose={() => setBibModal(null)} initial={bibModal} />}
       {toast && <Toast toast={toast} />}
     </div>
   );
@@ -484,10 +605,11 @@ function LoginScreen({ onLogin }) {
           try {
             await sb("usuarios", {
               method: "POST",
-              body: JSON.stringify({ id: res.user?.id, nombre: form.nombre || form.correo, correo: form.correo, rol: "coordinador" }),
+              body: JSON.stringify({ id: res.user?.id, nombre: form.nombre || form.correo, correo: form.correo, rol: "lector" }),
             });
           } catch (_) { /* la cuenta ya quedó creada; el registro en "usuarios" se puede reintentar luego */ }
-          onLogin({ email: form.correo });
+          const propio = await fetchOwnUsuario();
+          onLogin({ email: form.correo, rol: propio?.rol || "lector" });
         } else {
           setNotice("Cuenta creada. Si tu proyecto exige confirmar el correo, revisa tu bandeja y luego inicia sesión aquí.");
           setMode("signin");
@@ -495,7 +617,8 @@ function LoginScreen({ onLogin }) {
       } else {
         const res = await authSignIn(form.correo, form.password);
         ACCESS_TOKEN = res.access_token;
-        onLogin({ email: form.correo });
+        const propio = await fetchOwnUsuario();
+        onLogin({ email: form.correo, rol: propio?.rol || "lector" });
       }
     } catch (err) {
       setError(err.message);
@@ -607,7 +730,7 @@ function Dashboard({ ctx }) {
         <div className="ev-card p-5 lg:col-span-2">
           <div className="flex items-center justify-between mb-4">
             <h3 className="ev-display font-semibold text-[15px]">Próximas actividades</h3>
-            <button onClick={() => setView("calendario")} className="text-[12.5px] font-semibold flex items-center gap-1" style={{ color: T.primary }}>
+            <button onClick={() => setView("actividades")} className="text-[12.5px] font-semibold flex items-center gap-1" style={{ color: T.primary }}>
               Ver calendario <ArrowRight size={13} />
             </button>
           </div>
@@ -680,11 +803,12 @@ function StatCard({ label, value, icon: Icon, tone }) {
   );
 }
 
-/* ============================== CALENDARIO ============================== */
-function Calendario({ ctx }) {
-  const { calMode, setCalMode } = ctx;
+/* ============================== ACTIVIDADES (calendario) ============================== */
+function ActividadesCalendario({ ctx }) {
+  const { calMode, setCalMode, isMaestro } = ctx;
   return (
     <div className="flex flex-col gap-4">
+      <ReadOnlyBanner isMaestro={isMaestro} />
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-1 p-1 rounded-lg" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
           {["semana", "mes"].map((m) => (
@@ -698,24 +822,104 @@ function Calendario({ ctx }) {
             </button>
           ))}
         </div>
-        <Legend />
-        <button
-          onClick={() => ctx.setModal({ mode: "new", event: null })}
-          className="ev-btn px-3.5 py-2 text-[12.5px] text-white"
-          style={{ background: T.primary }}
-        >
-          <Plus size={14} /> Nueva actividad
-        </button>
+        <Legend types={ACTIVIDAD_TYPES} />
+        {isMaestro && (
+          <button
+            onClick={() => ctx.setModal({ mode: "new", event: null, defaultType: ACTIVIDAD_TYPES[0] })}
+            className="ev-btn px-3.5 py-2 text-[12.5px] text-white"
+            style={{ background: T.primary }}
+          >
+            <Plus size={14} /> Nueva actividad
+          </button>
+        )}
       </div>
-      {calMode === "semana" ? <WeekView ctx={ctx} /> : <MonthView ctx={ctx} />}
+      {calMode === "semana" ? <WeekView ctx={ctx} types={ACTIVIDAD_TYPES} /> : <MonthView ctx={ctx} types={ACTIVIDAD_TYPES} />}
     </div>
   );
 }
 
-function Legend() {
+/* ============================== TURNOS (calendario) ============================== */
+function TurnosCalendario({ ctx }) {
+  const { calMode, setCalMode, isMaestro, events, personal } = ctx;
+  const turnos = events.filter((e) => TURNO_TYPES.includes(e.type));
+  const porPersona = personal.map((p) => {
+    const suyos = turnos.filter((t) => t.personalId === p.id);
+    const horas = suyos.reduce((a, t) => a + (t.end - t.start), 0);
+    return { ...p, turnos: suyos.length, horasAsignadas: horas };
+  });
+
+  return (
+    <div className="flex flex-col gap-4">
+      <ReadOnlyBanner isMaestro={isMaestro} />
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-1 p-1 rounded-lg" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
+          {["semana", "mes"].map((m) => (
+            <button
+              key={m}
+              onClick={() => setCalMode(m)}
+              className="ev-btn px-3.5 py-1.5 text-[12.5px] capitalize"
+              style={{ background: calMode === m ? T.primary : "transparent", color: calMode === m ? "#fff" : T.ink }}
+            >
+              {m}
+            </button>
+          ))}
+        </div>
+        <Legend types={TURNO_TYPES} />
+        {isMaestro && (
+          <button
+            onClick={() => ctx.setModal({ mode: "new", event: null, defaultType: "turno_dia" })}
+            className="ev-btn px-3.5 py-2 text-[12.5px] text-white"
+            style={{ background: T.primary }}
+          >
+            <Plus size={14} /> Nuevo turno
+          </button>
+        )}
+      </div>
+      {calMode === "semana" ? <WeekView ctx={ctx} types={TURNO_TYPES} /> : <MonthView ctx={ctx} types={TURNO_TYPES} />}
+
+      <div className="ev-card overflow-hidden">
+        <div className="px-5 py-4 border-b" style={{ borderColor: T.border }}>
+          <h3 className="ev-display font-semibold text-[15px]">Horas asignadas por persona · semana actual</h3>
+        </div>
+        <div className="divide-y ev-scroll" style={{ borderColor: T.border }}>
+          {porPersona.filter((p) => p.turnos > 0).map((p) => {
+            const pct = Math.min(100, Math.round((p.horasAsignadas / p.horas) * 100));
+            const over = p.horasAsignadas > p.horas;
+            return (
+              <div key={p.id} className="px-5 py-3.5">
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="font-medium text-[13px]">{p.nombre}</span>
+                  <span className="ev-mono text-[12px]" style={{ color: over ? T.danger : T.muted }}>{p.horasAsignadas}h / {p.horas}h</span>
+                </div>
+                <div className="h-1.5 rounded-full" style={{ background: T.border }}>
+                  <div className="h-1.5 rounded-full" style={{ width: `${pct}%`, background: over ? T.danger : T.primary }} />
+                </div>
+              </div>
+            );
+          })}
+          {porPersona.filter((p) => p.turnos > 0).length === 0 && (
+            <p className="px-5 py-6 text-[12.5px] text-center" style={{ color: T.muted }}>Aún no hay turnos asignados.</p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ReadOnlyBanner({ isMaestro }) {
+  if (isMaestro) return null;
+  return (
+    <div className="flex items-center gap-2 px-3.5 py-2.5 rounded-lg text-[12.5px]" style={{ background: T.accentSoft, color: "#8A5A17" }}>
+      <Lock size={14} /> Estás en modo lectura. Solo un usuario Maestro puede crear, editar o eliminar registros.
+    </div>
+  );
+}
+
+function Legend({ types }) {
+  const entries = types ? types.map((k) => [k, ACTIVITY_TYPES[k]]) : Object.entries(ACTIVITY_TYPES);
   return (
     <div className="hidden xl:flex items-center gap-3 flex-wrap">
-      {Object.entries(ACTIVITY_TYPES).map(([k, v]) => (
+      {entries.map(([k, v]) => (
         <span key={k} className="flex items-center gap-1.5 text-[11.5px]" style={{ color: T.muted }}>
           <span className="w-2 h-2 rounded-full" style={{ background: v.color }} /> {v.label}
         </span>
@@ -728,10 +932,11 @@ const HOUR_START = 6;
 const HOUR_END = 24;
 const ROW_H = 52;
 
-function WeekView({ ctx }) {
-  const { weekDays, weekOffset, setWeekOffset, events, setDetail, setModal } = ctx;
+function WeekView({ ctx, types }) {
+  const { weekDays, weekOffset, setWeekOffset, events, setDetail, setModal, isMaestro } = ctx;
   const todayISO = toISO(TODAY);
   const hours = Array.from({ length: HOUR_END - HOUR_START }, (_, i) => HOUR_START + i);
+  const filtered = events.filter((e) => types.includes(e.type));
 
   return (
     <div className="ev-card overflow-hidden print-area">
@@ -767,7 +972,7 @@ function WeekView({ ctx }) {
 
           {weekDays.map((d, dayIdx) => {
             const dISO = toISO(d);
-            const dayEvents = events.filter((e) => e.date === dISO);
+            const dayEvents = filtered.filter((e) => e.date === dISO);
             return (
               <div
                 key={dayIdx}
@@ -777,8 +982,8 @@ function WeekView({ ctx }) {
                 {hours.map((h) => (
                   <div
                     key={h}
-                    onClick={() => ctx.setModal({ mode: "new", event: null, prefill: { date: dISO, start: h, end: h + 1 } })}
-                    className="absolute w-full border-t hover:bg-black/[0.02] cursor-pointer"
+                    onClick={() => isMaestro && ctx.setModal({ mode: "new", event: null, defaultType: types[0], prefill: { date: dISO, start: h, end: h + 1 } })}
+                    className={`absolute w-full border-t ${isMaestro ? "hover:bg-black/[0.02] cursor-pointer" : ""}`}
                     style={{ top: (h - HOUR_START) * ROW_H, height: ROW_H, borderColor: "#EEF1EF" }}
                   />
                 ))}
@@ -797,7 +1002,7 @@ function WeekView({ ctx }) {
                       }}
                     >
                       <p className="text-[11.5px] font-semibold truncate" style={{ color: T.ink }}>{e.title}</p>
-                      <p className="ev-mono text-[10px] truncate" style={{ color: T.muted }}>{fmtRange(e.start, e.end)}</p>
+                      <p className="text-[10px] truncate" style={{ color: T.muted }}>{personName(e.personalId)}</p>
                       {e.end > HOUR_END && <p className="text-[9.5px] font-medium" style={{ color }}>continúa mañana ↴</p>}
                     </div>
                   );
@@ -811,13 +1016,14 @@ function WeekView({ ctx }) {
   );
 }
 
-function MonthView({ ctx }) {
+function MonthView({ ctx, types }) {
   const { monthOffset, setMonthOffset, events, setCalMode, setWeekOffset } = ctx;
   const base = new Date(TODAY.getFullYear(), TODAY.getMonth() + monthOffset, 1);
   const firstOfMonth = new Date(base.getFullYear(), base.getMonth(), 1);
   const gridStart = getMonday(firstOfMonth);
   const cells = Array.from({ length: 42 }, (_, i) => addDays(gridStart, i));
   const todayISO = toISO(TODAY);
+  const filtered = events.filter((e) => types.includes(e.type));
 
   function jumpToWeek(d) {
     const diffDays = Math.round((getMonday(d) - monday) / 86400000);
@@ -843,7 +1049,7 @@ function MonthView({ ctx }) {
         {cells.map((d, i) => {
           const dISO = toISO(d);
           const inMonth = d.getMonth() === base.getMonth();
-          const dayEvents = events.filter((e) => e.date === dISO);
+          const dayEvents = filtered.filter((e) => e.date === dISO);
           return (
             <button
               key={i}
@@ -870,13 +1076,25 @@ function MonthView({ ctx }) {
 
 /* ============================== PERSONAL ============================== */
 function Personal({ ctx }) {
-  const { personal, toggleEstado, setModal } = ctx;
+  const { personal, toggleEstado, isMaestro, setPersonalModal } = ctx;
   return (
     <div className="ev-card overflow-hidden">
       <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderColor: T.border }}>
-        <h3 className="ev-display font-semibold text-[15px]">Personal registrado</h3>
-        <span className="text-[12px]" style={{ color: T.muted }}>{personal.length} personas</span>
+        <div>
+          <h3 className="ev-display font-semibold text-[15px]">Personal registrado</h3>
+          <span className="text-[12px]" style={{ color: T.muted }}>{personal.length} personas</span>
+        </div>
+        {isMaestro && (
+          <button onClick={() => setPersonalModal({ mode: "new", person: null })} className="ev-btn px-3.5 py-2 text-[12.5px] text-white" style={{ background: T.primary }}>
+            <Plus size={14} /> Nueva persona
+          </button>
+        )}
       </div>
+      {!isMaestro && (
+        <div className="flex items-center gap-2 px-5 py-2.5 text-[12px]" style={{ background: T.accentSoft, color: "#8A5A17" }}>
+          <Lock size={13} /> Modo lectura: solo un usuario Maestro puede registrar o editar personal.
+        </div>
+      )}
       <div className="overflow-x-auto ev-scroll">
         <table className="w-full text-[13px]">
           <thead>
@@ -899,88 +1117,17 @@ function Personal({ ctx }) {
                   </span>
                 </td>
                 <td className="px-5 py-3 text-right">
-                  <button onClick={() => toggleEstado(p.id)} className="ev-btn text-[12px] px-2.5 py-1" style={{ border: `1px solid ${T.border}` }}>
-                    {p.estado === "activo" ? "Desactivar" : "Activar"}
-                  </button>
+                  {isMaestro && (
+                    <div className="flex justify-end gap-2">
+                      <button onClick={() => setPersonalModal({ mode: "edit", person: p })} className="ev-btn text-[12px] px-2.5 py-1" style={{ border: `1px solid ${T.border}` }}>
+                        <Pencil size={12} /> Editar
+                      </button>
+                      <button onClick={() => toggleEstado(p.id)} className="ev-btn text-[12px] px-2.5 py-1" style={{ border: `1px solid ${T.border}` }}>
+                        {p.estado === "activo" ? "Desactivar" : "Activar"}
+                      </button>
+                    </div>
+                  )}
                 </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-/* ============================== TURNOS ============================== */
-function Turnos({ ctx }) {
-  const { events, personal } = ctx;
-  const turnos = events.filter((e) => e.type === "turno_dia" || e.type === "turno_noche");
-  const porPersona = personal.map((p) => {
-    const suyos = turnos.filter((t) => t.personalId === p.id);
-    const horas = suyos.reduce((a, t) => a + (t.end - t.start), 0);
-    return { ...p, turnos: suyos.length, horasAsignadas: horas };
-  });
-
-  return (
-    <div className="flex flex-col gap-5">
-      <div className="grid sm:grid-cols-2 gap-4">
-        <div className="ev-card p-4">
-          <p className="text-[12px] font-medium" style={{ color: T.muted }}>Turno Día</p>
-          <p className="ev-display text-[22px] font-semibold">07:00 – 17:00 <span className="text-[13px] font-normal" style={{ color: T.muted }}>· 10h</span></p>
-        </div>
-        <div className="ev-card p-4">
-          <p className="text-[12px] font-medium" style={{ color: T.muted }}>Turno Noche</p>
-          <p className="ev-display text-[22px] font-semibold">17:00 – 07:00 <span className="text-[13px] font-normal" style={{ color: T.muted }}>· 14h</span></p>
-        </div>
-      </div>
-
-      <div className="ev-card overflow-hidden">
-        <div className="px-5 py-4 border-b" style={{ borderColor: T.border }}>
-          <h3 className="ev-display font-semibold text-[15px]">Horas asignadas por persona · semana actual</h3>
-        </div>
-        <div className="divide-y ev-scroll" style={{ borderColor: T.border }}>
-          {porPersona.filter((p) => p.turnos > 0).map((p) => {
-            const pct = Math.min(100, Math.round((p.horasAsignadas / p.horas) * 100));
-            const over = p.horasAsignadas > p.horas;
-            return (
-              <div key={p.id} className="px-5 py-3.5">
-                <div className="flex items-center justify-between mb-1.5">
-                  <span className="font-medium text-[13px]">{p.nombre}</span>
-                  <span className="ev-mono text-[12px]" style={{ color: over ? T.danger : T.muted }}>{p.horasAsignadas}h / {p.horas}h</span>
-                </div>
-                <div className="h-1.5 rounded-full" style={{ background: T.border }}>
-                  <div className="h-1.5 rounded-full" style={{ width: `${pct}%`, background: over ? T.danger : T.primary }} />
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      <div className="ev-card overflow-hidden">
-        <div className="px-5 py-4 border-b" style={{ borderColor: T.border }}>
-          <h3 className="ev-display font-semibold text-[15px]">Listado de turnos de la semana</h3>
-        </div>
-        <table className="w-full text-[13px]">
-          <thead>
-            <tr className="text-left" style={{ color: T.muted }}>
-              {["Fecha", "Tipo", "Horario", "Responsable"].map((h) => (
-                <th key={h} className="px-5 py-2 font-medium text-[11.5px] uppercase tracking-wide">{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {turnos.map((t) => (
-              <tr key={t.id} className="border-t" style={{ borderColor: T.border }}>
-                <td className="px-5 py-2.5">{new Date(t.date).toLocaleDateString("es-CO", { weekday: "short", day: "numeric", month: "short" })}</td>
-                <td className="px-5 py-2.5">
-                  <span className="px-2 py-0.5 rounded-full text-[11.5px] font-medium" style={{ background: `${ACTIVITY_TYPES[t.type].color}1A`, color: ACTIVITY_TYPES[t.type].color }}>
-                    {ACTIVITY_TYPES[t.type].label}
-                  </span>
-                </td>
-                <td className="px-5 py-2.5 ev-mono">{fmtRange(t.start, t.end)}</td>
-                <td className="px-5 py-2.5" style={{ color: t.personalId ? T.ink : T.danger }}>{personName(t.personalId)}</td>
               </tr>
             ))}
           </tbody>
@@ -1071,40 +1218,61 @@ function Configuracion() {
 
 /* ============================== MODAL: NUEVA/EDITAR ACTIVIDAD ============================== */
 function EventModal({ ctx, onClose, onSave, initial }) {
-  const { personal, saving } = ctx;
+  const { personal, saving, biblioteca } = ctx;
   const base = initial.event || {};
   const pre = initial.prefill || {};
+  const allowedTypes = base.type
+    ? (TURNO_TYPES.includes(base.type) ? TURNO_TYPES : ACTIVIDAD_TYPES)
+    : (initial.defaultType && TURNO_TYPES.includes(initial.defaultType) ? TURNO_TYPES : ACTIVIDAD_TYPES);
   const [form, setForm] = useState({
     id: base.id || nid(),
     title: base.title || "",
-    type: base.type || "terapeutico",
+    type: base.type || initial.defaultType || allowedTypes[0],
     date: base.date || pre.date || toISO(TODAY),
     start: base.start ?? pre.start ?? 8,
     end: base.end ?? pre.end ?? 9,
     personalId: base.personalId || "",
+    metodologia: base.metodologia || "",
+    objetivos: base.objetivos || "",
   });
   const selected = personById(form.personalId);
+  const esTurno = form.type.startsWith("turno_");
 
   function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
+  function usarBiblioteca(id) {
+    const item = biblioteca.find((b) => b.id === id);
+    if (!item) return;
+    setForm((f) => ({ ...f, title: item.nombre, type: item.tipo, metodologia: item.metodologia, objetivos: item.objetivos }));
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       <div className="ev-card w-full max-w-md p-5 max-h-[90vh] overflow-y-auto ev-scroll">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="ev-display font-semibold text-[16px]">{initial.mode === "edit" ? "Editar actividad" : "Nueva actividad"}</h3>
+          <h3 className="ev-display font-semibold text-[16px]">
+            {initial.mode === "edit" ? "Editar" : "Nueva"} {esTurno ? "turno" : "actividad"}
+          </h3>
           <button onClick={onClose}><X size={18} /></button>
         </div>
         <div className="flex flex-col gap-3.5">
+          {!esTurno && biblioteca.length > 0 && (
+            <Field label="Usar plantilla de la biblioteca (opcional)">
+              <select onChange={(e) => e.target.value && usarBiblioteca(e.target.value)} defaultValue="" style={inputStyle}>
+                <option value="">— Escribir manualmente —</option>
+                {biblioteca.map((b) => <option key={b.id} value={b.id}>{b.nombre}</option>)}
+              </select>
+            </Field>
+          )}
           <Field label="Nombre de la actividad">
             <input
-              value={form.type.startsWith("turno_") ? ACTIVITY_TYPES[form.type].label : form.title}
-              disabled={form.type.startsWith("turno_")}
+              value={esTurno ? ACTIVITY_TYPES[form.type].label : form.title}
+              disabled={esTurno}
               onChange={(e) => set("title", e.target.value)}
               placeholder="Ej. Grupo Terapéutico"
-              style={{ ...inputStyle, opacity: form.type.startsWith("turno_") ? 0.6 : 1 }}
+              style={{ ...inputStyle, opacity: esTurno ? 0.6 : 1 }}
             />
           </Field>
-          <Field label="Tipo de actividad">
+          <Field label="Tipo">
             <select
               value={form.type}
               onChange={(e) => {
@@ -1114,11 +1282,8 @@ function EventModal({ ctx, onClose, onSave, initial }) {
               }}
               style={inputStyle}
             >
-              {Object.entries(ACTIVITY_TYPES).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+              {allowedTypes.map((k) => <option key={k} value={k}>{ACTIVITY_TYPES[k].label}</option>)}
             </select>
-            {form.type.startsWith("turno_") && (
-              <span className="text-[11px]" style={{ color: T.muted }}>La tabla "turnos" en Supabase no guarda un nombre libre, solo el tipo.</span>
-            )}
           </Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Fecha">
@@ -1147,6 +1312,16 @@ function EventModal({ ctx, onClose, onSave, initial }) {
             <p>Cargo: <span style={{ color: T.ink }}>{selected?.cargo || "—"}</span></p>
             <p>Área: <span style={{ color: T.ink }}>{selected?.area || "—"}</span></p>
           </div>
+          {!esTurno && (
+            <>
+              <Field label="Metodología">
+                <textarea rows={3} value={form.metodologia} onChange={(e) => set("metodologia", e.target.value)} placeholder="Cómo se desarrolla la actividad…" style={{ ...inputStyle, resize: "vertical" }} />
+              </Field>
+              <Field label="Objetivos">
+                <textarea rows={3} value={form.objetivos} onChange={(e) => set("objetivos", e.target.value)} placeholder="Qué se busca lograr…" style={{ ...inputStyle, resize: "vertical" }} />
+              </Field>
+            </>
+          )}
         </div>
         <div className="flex justify-end gap-2 mt-5">
           <button onClick={onClose} className="ev-btn px-4 py-2 text-[13px]" style={{ border: `1px solid ${T.border}` }}>Cancelar</button>
@@ -1176,7 +1351,7 @@ function Field({ label, children }) {
 }
 
 /* ============================== DRAWER: DETALLE ============================== */
-function DetailDrawer({ event, onClose, onEdit, onDelete }) {
+function DetailDrawer({ ctx, event, onClose, onEdit, onDelete }) {
   const p = personById(event.personalId);
   const color = ACTIVITY_TYPES[event.type].color;
   return (
@@ -1197,24 +1372,200 @@ function DetailDrawer({ event, onClose, onEdit, onDelete }) {
           <DetailRow label="Responsable" value={p?.nombre || "Sin asignar"} />
           <DetailRow label="Cargo" value={p?.cargo || "—"} />
           <DetailRow label="Área" value={p?.area || "—"} />
+          {(event.metodologia || event.objetivos) && (
+            <div className="pt-2 mt-1 border-t flex flex-col gap-4" style={{ borderColor: T.border }}>
+              {event.metodologia && <DetailRow label="Metodología" value={event.metodologia} multiline />}
+              {event.objetivos && <DetailRow label="Objetivos" value={event.objetivos} multiline />}
+            </div>
+          )}
         </div>
-        <div className="flex gap-2 mt-8">
-          <button onClick={onEdit} className="ev-btn flex-1 justify-center px-3.5 py-2.5 text-[13px]" style={{ border: `1px solid ${T.border}` }}>
-            <Pencil size={14} /> Editar
-          </button>
-          <button onClick={onDelete} className="ev-btn flex-1 justify-center px-3.5 py-2.5 text-[13px]" style={{ background: T.dangerSoft, color: T.danger }}>
-            <Trash2 size={14} /> Eliminar
+        {ctx.isMaestro && (
+          <div className="flex gap-2 mt-8">
+            <button onClick={onEdit} className="ev-btn flex-1 justify-center px-3.5 py-2.5 text-[13px]" style={{ border: `1px solid ${T.border}` }}>
+              <Pencil size={14} /> Editar
+            </button>
+            <button onClick={onDelete} className="ev-btn flex-1 justify-center px-3.5 py-2.5 text-[13px]" style={{ background: T.dangerSoft, color: T.danger }}>
+              <Trash2 size={14} /> Eliminar
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+function DetailRow({ label, value, multiline }) {
+  return (
+    <div>
+      <p className="text-[11.5px] font-medium" style={{ color: T.muted }}>{label}</p>
+      <p className={`text-[14px] font-medium mt-0.5 ${multiline ? "whitespace-pre-line leading-snug" : ""}`}>{value}</p>
+    </div>
+  );
+}
+
+/* ============================== MODAL: PERSONAL ============================== */
+function PersonalModal({ ctx, onClose, initial }) {
+  const { savePersonal, saving } = ctx;
+  const base = initial.person || {};
+  const [form, setForm] = useState({
+    id: base.id || nid(),
+    nombre: base.nombre || "",
+    cargo: base.cargo || "",
+    area: base.area || "",
+    tipoContrato: base.tipoContrato || "Término indefinido",
+    horas: base.horas ?? 40,
+    disponibilidad: base.disponibilidad || "Completa",
+    estado: base.estado || "activo",
+  });
+  function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="ev-card w-full max-w-md p-5 max-h-[90vh] overflow-y-auto ev-scroll">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="ev-display font-semibold text-[16px]">{initial.mode === "edit" ? "Editar persona" : "Nueva persona"}</h3>
+          <button onClick={onClose}><X size={18} /></button>
+        </div>
+        <div className="flex flex-col gap-3.5">
+          <Field label="Nombre completo">
+            <input value={form.nombre} onChange={(e) => set("nombre", e.target.value)} placeholder="Ej. Carlos Gómez" style={inputStyle} />
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Cargo">
+              <input value={form.cargo} onChange={(e) => set("cargo", e.target.value)} placeholder="Auxiliar terapéutico" style={inputStyle} />
+            </Field>
+            <Field label="Área">
+              <input value={form.area} onChange={(e) => set("area", e.target.value)} placeholder="Terapéutico" style={inputStyle} />
+            </Field>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Tipo de contrato">
+              <input value={form.tipoContrato} onChange={(e) => set("tipoContrato", e.target.value)} style={inputStyle} />
+            </Field>
+            <Field label="Horas/semana">
+              <input type="number" min={0} max={80} value={form.horas} onChange={(e) => set("horas", e.target.value)} style={inputStyle} />
+            </Field>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Disponibilidad">
+              <input value={form.disponibilidad} onChange={(e) => set("disponibilidad", e.target.value)} placeholder="Completa" style={inputStyle} />
+            </Field>
+            <Field label="Estado">
+              <select value={form.estado} onChange={(e) => set("estado", e.target.value)} style={inputStyle}>
+                <option value="activo">Activo</option>
+                <option value="inactivo">Inactivo</option>
+              </select>
+            </Field>
+          </div>
+        </div>
+        <div className="flex justify-end gap-2 mt-5">
+          <button onClick={onClose} className="ev-btn px-4 py-2 text-[13px]" style={{ border: `1px solid ${T.border}` }}>Cancelar</button>
+          <button
+            onClick={() => savePersonal(form)}
+            disabled={!form.nombre || !form.cargo || saving}
+            className="ev-btn px-4 py-2 text-[13px] text-white disabled:opacity-40"
+            style={{ background: T.primary }}
+          >
+            {saving ? "Guardando…" : "Guardar"}
           </button>
         </div>
       </div>
     </div>
   );
 }
-function DetailRow({ label, value }) {
+
+/* ============================== BIBLIOTECA DE ACTIVIDADES ============================== */
+function Biblioteca({ ctx }) {
+  const { biblioteca, isMaestro, setBibModal, deleteBiblioteca } = ctx;
   return (
-    <div>
-      <p className="text-[11.5px] font-medium" style={{ color: T.muted }}>{label}</p>
-      <p className="text-[14px] font-medium mt-0.5">{value}</p>
+    <div className="flex flex-col gap-4">
+      <ReadOnlyBanner isMaestro={isMaestro} />
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="ev-display font-semibold text-[16px]">Biblioteca de actividades</h3>
+          <p className="text-[12.5px]" style={{ color: T.muted }}>Plantillas con metodología y objetivos, listas para reutilizar al programar.</p>
+        </div>
+        {isMaestro && (
+          <button onClick={() => setBibModal({ mode: "new", item: null })} className="ev-btn px-3.5 py-2 text-[12.5px] text-white" style={{ background: T.primary }}>
+            <Plus size={14} /> Nueva plantilla
+          </button>
+        )}
+      </div>
+      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        {biblioteca.map((b) => (
+          <div key={b.id} className="ev-card p-4 flex flex-col gap-2">
+            <span className="self-start px-2 py-0.5 rounded-full text-[11px] font-semibold" style={{ background: `${ACTIVITY_TYPES[b.tipo].color}1A`, color: ACTIVITY_TYPES[b.tipo].color }}>
+              {ACTIVITY_TYPES[b.tipo].label}
+            </span>
+            <h4 className="font-semibold text-[14px]">{b.nombre}</h4>
+            {b.metodologia && <p className="text-[12px] line-clamp-3" style={{ color: T.muted }}><strong>Metodología:</strong> {b.metodologia}</p>}
+            {b.objetivos && <p className="text-[12px] line-clamp-2" style={{ color: T.muted }}><strong>Objetivos:</strong> {b.objetivos}</p>}
+            {isMaestro && (
+              <div className="flex gap-2 mt-1">
+                <button onClick={() => setBibModal({ mode: "edit", item: b })} className="ev-btn text-[12px] px-2.5 py-1" style={{ border: `1px solid ${T.border}` }}>
+                  <Pencil size={12} /> Editar
+                </button>
+                <button onClick={() => deleteBiblioteca(b.id)} className="ev-btn text-[12px] px-2.5 py-1" style={{ background: T.dangerSoft, color: T.danger }}>
+                  <Trash2 size={12} /> Eliminar
+                </button>
+              </div>
+            )}
+          </div>
+        ))}
+        {biblioteca.length === 0 && (
+          <p className="text-[12.5px] col-span-full text-center py-8" style={{ color: T.muted }}>Todavía no hay plantillas registradas.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function BibliotecaModal({ ctx, onClose, initial }) {
+  const { saveBiblioteca, saving } = ctx;
+  const base = initial.item || {};
+  const [form, setForm] = useState({
+    id: base.id || nid(),
+    nombre: base.nombre || "",
+    tipo: base.tipo || ACTIVIDAD_TYPES[0],
+    metodologia: base.metodologia || "",
+    objetivos: base.objetivos || "",
+  });
+  function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="ev-card w-full max-w-md p-5 max-h-[90vh] overflow-y-auto ev-scroll">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="ev-display font-semibold text-[16px]">{initial.mode === "edit" ? "Editar plantilla" : "Nueva plantilla"}</h3>
+          <button onClick={onClose}><X size={18} /></button>
+        </div>
+        <div className="flex flex-col gap-3.5">
+          <Field label="Nombre de la actividad">
+            <input value={form.nombre} onChange={(e) => set("nombre", e.target.value)} placeholder="Ej. Grupo Terapéutico" style={inputStyle} />
+          </Field>
+          <Field label="Tipo">
+            <select value={form.tipo} onChange={(e) => set("tipo", e.target.value)} style={inputStyle}>
+              {ACTIVIDAD_TYPES.map((k) => <option key={k} value={k}>{ACTIVITY_TYPES[k].label}</option>)}
+            </select>
+          </Field>
+          <Field label="Metodología">
+            <textarea rows={4} value={form.metodologia} onChange={(e) => set("metodologia", e.target.value)} placeholder="Cómo se desarrolla la actividad…" style={{ ...inputStyle, resize: "vertical" }} />
+          </Field>
+          <Field label="Objetivos">
+            <textarea rows={3} value={form.objetivos} onChange={(e) => set("objetivos", e.target.value)} placeholder="Qué se busca lograr…" style={{ ...inputStyle, resize: "vertical" }} />
+          </Field>
+        </div>
+        <div className="flex justify-end gap-2 mt-5">
+          <button onClick={onClose} className="ev-btn px-4 py-2 text-[13px]" style={{ border: `1px solid ${T.border}` }}>Cancelar</button>
+          <button
+            onClick={() => saveBiblioteca(form)}
+            disabled={!form.nombre || saving}
+            className="ev-btn px-4 py-2 text-[13px] text-white disabled:opacity-40"
+            style={{ background: T.primary }}
+          >
+            {saving ? "Guardando…" : "Guardar"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
