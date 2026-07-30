@@ -1414,6 +1414,20 @@ function TurnosCalendario({ ctx }) {
     return { ...p, porSemana };
   });
 
+  const primerDiaMes = toISO(new Date(base.getFullYear(), base.getMonth(), 1));
+  const ultimoDiaMes = toISO(new Date(base.getFullYear(), base.getMonth() + 1, 0));
+  const turnosDelMes = turnos.filter((t) => t.date >= primerDiaMes && t.date <= ultimoDiaMes);
+  const resumenPorPersona = baseParaResumen.map((p) => {
+    const suyos = turnosDelMes.filter((t) => t.personalId === p.id);
+    return {
+      ...p,
+      dia: suyos.filter((t) => t.type === "turno_dia").length,
+      noche: suyos.filter((t) => t.type === "turno_noche").length,
+      domingos: suyos.filter((t) => new Date(`${t.date}T00:00:00`).getDay() === 0).length,
+      festivos: suyos.filter((t) => festivoSet.has(t.date)).length,
+    };
+  });
+
   function chipsFor(dISO, tipo) {
     return turnos.filter((t) => t.date === dISO && t.type === tipo);
   }
@@ -1481,6 +1495,40 @@ function TurnosCalendario({ ctx }) {
               ))}
               {horasPorSemana.length === 0 && (
                 <tr><td colSpan={semanasDelMes.length + 1} className="px-4 py-5 text-center" style={{ color: T.muted }}>No hay colaboradores registrados para turnos.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="ev-card overflow-hidden max-w-2xl">
+        <div className="px-4 py-3 border-b" style={{ borderColor: T.border }}>
+          <h3 className="ev-display font-semibold text-[13.5px]">Resumen de turnos · {MES_LABEL[base.getMonth()]} {base.getFullYear()}</h3>
+          <p className="text-[11.5px]" style={{ color: T.muted }}>Número de turnos por persona en el mes (los domingos y festivos se cuentan aparte, sin importar si fueron de día o de noche).</p>
+        </div>
+        <div className="overflow-x-auto ev-scroll">
+          <table className="w-full text-[12.5px]">
+            <thead>
+              <tr className="text-left" style={{ color: T.muted }}>
+                <th className="px-4 py-2 font-medium text-[11px] uppercase tracking-wide">Colaborador</th>
+                <th className="px-3 py-2 font-medium text-[11px] uppercase tracking-wide text-right">Turnos día</th>
+                <th className="px-3 py-2 font-medium text-[11px] uppercase tracking-wide text-right">Turnos noche</th>
+                <th className="px-3 py-2 font-medium text-[11px] uppercase tracking-wide text-right">Domingos</th>
+                <th className="px-3 py-2 font-medium text-[11px] uppercase tracking-wide text-right">Festivos</th>
+              </tr>
+            </thead>
+            <tbody>
+              {resumenPorPersona.map((p) => (
+                <tr key={p.id} className="border-t" style={{ borderColor: T.border }}>
+                  <td className="px-4 py-2 font-medium">{p.nombre}</td>
+                  <td className="px-3 py-2 text-right ev-mono" style={{ color: T.muted }}>{p.dia}</td>
+                  <td className="px-3 py-2 text-right ev-mono" style={{ color: T.muted }}>{p.noche}</td>
+                  <td className="px-3 py-2 text-right ev-mono" style={{ color: p.domingos > 0 ? T.danger : T.muted }}>{p.domingos}</td>
+                  <td className="px-3 py-2 text-right ev-mono" style={{ color: p.festivos > 0 ? T.danger : T.muted }}>{p.festivos}</td>
+                </tr>
+              ))}
+              {resumenPorPersona.length === 0 && (
+                <tr><td colSpan={5} className="px-4 py-5 text-center" style={{ color: T.muted }}>No hay colaboradores registrados para turnos.</td></tr>
               )}
             </tbody>
           </table>
