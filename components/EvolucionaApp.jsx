@@ -1406,25 +1406,44 @@ function TurnosCalendario({ ctx }) {
   const semanasDelMes = [];
   for (let i = 0; i < visibleCells.length; i += 7) semanasDelMes.push(visibleCells.slice(i, i + 7));
 
+  // Rango personalizado para las tablas de resumen (independiente del mes que se esté viendo en el calendario)
+  const [usarRango, setUsarRango] = useState(false);
+  const [rangoDesde, setRangoDesde] = useState(toISO(new Date(base.getFullYear(), base.getMonth(), 1)));
+  const [rangoHasta, setRangoHasta] = useState(toISO(new Date(base.getFullYear(), base.getMonth() + 1, 0)));
+
+  const primerDiaResumen = usarRango ? rangoDesde : toISO(new Date(base.getFullYear(), base.getMonth(), 1));
+  const ultimoDiaResumen = usarRango ? rangoHasta : toISO(new Date(base.getFullYear(), base.getMonth() + 1, 0));
+
+  const semanasResumen = usarRango
+    ? (() => {
+        const inicio = getMonday(new Date(`${rangoDesde}T00:00:00`));
+        const fin = new Date(`${rangoHasta}T00:00:00`);
+        const totalDias = Math.round((fin - inicio) / 86400000) + 1;
+        const numSemanas = Math.max(1, Math.ceil(totalDias / 7));
+        return Array.from({ length: numSemanas }, (_, i) => Array.from({ length: 7 }, (_, j) => addDays(inicio, i * 7 + j)));
+      })()
+    : semanasDelMes;
+
   const horasPorSemana = baseParaResumen.map((p) => {
-    const porSemana = semanasDelMes.map((semana) => {
-      const fechas = semana.map(toISO);
+    const porSemana = semanasResumen.map((semana) => {
+      const fechas = semana.map(toISO).filter((f) => f >= primerDiaResumen && f <= ultimoDiaResumen);
       return turnos.filter((t) => t.personalId === p.id && fechas.includes(t.date)).reduce((a, t) => a + horasEfectivas(t), 0);
     });
     return { ...p, porSemana };
   });
 
-  const primerDiaMes = toISO(new Date(base.getFullYear(), base.getMonth(), 1));
-  const ultimoDiaMes = toISO(new Date(base.getFullYear(), base.getMonth() + 1, 0));
-  const turnosDelMes = turnos.filter((t) => t.date >= primerDiaMes && t.date <= ultimoDiaMes);
+  const turnosDelRango = turnos.filter((t) => t.date >= primerDiaResumen && t.date <= ultimoDiaResumen);
   const resumenPorPersona = baseParaResumen.map((p) => {
-    const suyos = turnosDelMes.filter((t) => t.personalId === p.id);
+    const suyos = turnosDelRango.filter((t) => t.personalId === p.id);
+    const esDomingo = (t) => new Date(`${t.date}T00:00:00`).getDay() === 0;
     return {
       ...p,
       dia: suyos.filter((t) => t.type === "turno_dia").length,
       noche: suyos.filter((t) => t.type === "turno_noche").length,
-      domingos: suyos.filter((t) => new Date(`${t.date}T00:00:00`).getDay() === 0).length,
-      festivos: suyos.filter((t) => festivoSet.has(t.date)).length,
+      domingoDia: suyos.filter((t) => t.type === "turno_dia" && esDomingo(t)).length,
+      domingoNoche: suyos.filter((t) => t.type === "turno_noche" && esDomingo(t)).length,
+      festivoDia: suyos.filter((t) => t.type === "turno_dia" && festivoSet.has(t.date)).length,
+      festivoNoche: suyos.filter((t) => t.type === "turno_noche" && festivoSet.has(t.date)).length,
     };
   });
 
@@ -1465,17 +1484,42 @@ function TurnosCalendario({ ctx }) {
 
       <TurnosMesGrid ctx={ctx} />
 
+      <div className="ev-card p-4 max-w-3xl">
+        <label className="flex items-center gap-2 text-[13px] font-medium mb-1">
+          <input type="checkbox" checked={usarRango} onChange={(e) => setUsarRango(e.target.checked)} />
+          Usar un rango de fechas personalizado para los resúmenes de abajo
+        </label>
+        {usarRango && (
+          <div className="grid grid-cols-2 gap-3 mt-2 max-w-sm">
+            <Field label="Desde">
+              <input type="date" value={rangoDesde} onChange={(e) => setRangoDesde(e.target.value)} style={inputStyle} />
+            </Field>
+            <Field label="Hasta">
+              <input type="date" value={rangoHasta} min={rangoDesde} onChange={(e) => setRangoHasta(e.target.value)} style={inputStyle} />
+            </Field>
+          </div>
+        )}
+      </div>
+
       <div className="ev-card overflow-hidden max-w-2xl">
         <div className="px-4 py-3 border-b" style={{ borderColor: T.border }}>
-          <h3 className="ev-display font-semibold text-[13.5px]">Horas por colaborador · por semana de {MES_LABEL[base.getMonth()]}</h3>
+          <h3 className="ev-display font-semibold text-[13.5px]">
+            Horas por colaborador · {usarRango
+              ? `${new Date(`${rangoDesde}T00:00:00`).toLocaleDateString("es-CO", { day: "numeric", month: "short" })} – ${new Date(`${rangoHasta}T00:00:00`).toLocaleDateString("es-CO", { day: "numeric", month: "short" })}`
+              : `por semana de ${MES_LABEL[base.getMonth()]}`}
+          </h3>
         </div>
         <div className="overflow-x-auto ev-scroll">
           <table className="w-full text-[12.5px]">
             <thead>
               <tr className="text-left" style={{ color: T.muted }}>
                 <th className="px-4 py-2 font-medium text-[11px] uppercase tracking-wide">Colaborador</th>
-                {semanasDelMes.map((_, i) => (
-                  <th key={i} className="px-3 py-2 font-medium text-[11px] uppercase tracking-wide text-right">Semana {i + 1}</th>
+                {semanasResumen.map((semana, i) => (
+                  <th key={i} className="px-3 py-2 font-medium text-[11px] uppercase tracking-wide text-right">
+                    {usarRango
+                      ? `${semana[0].toLocaleDateString("es-CO", { day: "numeric", month: "short" })}–${semana[6].toLocaleDateString("es-CO", { day: "numeric", month: "short" })}`
+                      : `Semana ${i + 1}`}
+                  </th>
                 ))}
               </tr>
             </thead>
@@ -1494,27 +1538,38 @@ function TurnosCalendario({ ctx }) {
                 </tr>
               ))}
               {horasPorSemana.length === 0 && (
-                <tr><td colSpan={semanasDelMes.length + 1} className="px-4 py-5 text-center" style={{ color: T.muted }}>No hay colaboradores registrados para turnos.</td></tr>
+                <tr><td colSpan={semanasResumen.length + 1} className="px-4 py-5 text-center" style={{ color: T.muted }}>No hay colaboradores registrados para turnos.</td></tr>
               )}
             </tbody>
           </table>
         </div>
       </div>
 
-      <div className="ev-card overflow-hidden max-w-2xl">
+      <div className="ev-card overflow-hidden max-w-3xl">
         <div className="px-4 py-3 border-b" style={{ borderColor: T.border }}>
-          <h3 className="ev-display font-semibold text-[13.5px]">Resumen de turnos · {MES_LABEL[base.getMonth()]} {base.getFullYear()}</h3>
-          <p className="text-[11.5px]" style={{ color: T.muted }}>Número de turnos por persona en el mes (los domingos y festivos se cuentan aparte, sin importar si fueron de día o de noche).</p>
+          <h3 className="ev-display font-semibold text-[13.5px]">
+            Resumen de turnos · {usarRango
+              ? `${new Date(`${rangoDesde}T00:00:00`).toLocaleDateString("es-CO", { day: "numeric", month: "short" })} – ${new Date(`${rangoHasta}T00:00:00`).toLocaleDateString("es-CO", { day: "numeric", month: "short", year: "numeric" })}`
+              : `${MES_LABEL[base.getMonth()]} ${base.getFullYear()}`}
+          </h3>
+          <p className="text-[11.5px]" style={{ color: T.muted }}>Número de turnos por persona en el mes, separados por tipo.</p>
         </div>
         <div className="overflow-x-auto ev-scroll">
           <table className="w-full text-[12.5px]">
             <thead>
               <tr className="text-left" style={{ color: T.muted }}>
-                <th className="px-4 py-2 font-medium text-[11px] uppercase tracking-wide">Colaborador</th>
-                <th className="px-3 py-2 font-medium text-[11px] uppercase tracking-wide text-right">Turnos día</th>
-                <th className="px-3 py-2 font-medium text-[11px] uppercase tracking-wide text-right">Turnos noche</th>
-                <th className="px-3 py-2 font-medium text-[11px] uppercase tracking-wide text-right">Domingos</th>
-                <th className="px-3 py-2 font-medium text-[11px] uppercase tracking-wide text-right">Festivos</th>
+                <th rowSpan={2} className="px-4 py-2 font-medium text-[11px] uppercase tracking-wide align-bottom">Colaborador</th>
+                <th colSpan={2} className="px-3 py-1 font-medium text-[10.5px] uppercase tracking-wide text-center border-b" style={{ borderColor: T.border }}>Total</th>
+                <th colSpan={2} className="px-3 py-1 font-medium text-[10.5px] uppercase tracking-wide text-center border-b" style={{ borderColor: T.border }}>Domingo</th>
+                <th colSpan={2} className="px-3 py-1 font-medium text-[10.5px] uppercase tracking-wide text-center border-b" style={{ borderColor: T.border }}>Festivo</th>
+              </tr>
+              <tr className="text-left" style={{ color: T.muted }}>
+                <th className="px-3 py-1.5 font-medium text-[11px] uppercase tracking-wide text-right">Día</th>
+                <th className="px-3 py-1.5 font-medium text-[11px] uppercase tracking-wide text-right">Noche</th>
+                <th className="px-3 py-1.5 font-medium text-[11px] uppercase tracking-wide text-right">Día</th>
+                <th className="px-3 py-1.5 font-medium text-[11px] uppercase tracking-wide text-right">Noche</th>
+                <th className="px-3 py-1.5 font-medium text-[11px] uppercase tracking-wide text-right">Día</th>
+                <th className="px-3 py-1.5 font-medium text-[11px] uppercase tracking-wide text-right">Noche</th>
               </tr>
             </thead>
             <tbody>
@@ -1523,12 +1578,14 @@ function TurnosCalendario({ ctx }) {
                   <td className="px-4 py-2 font-medium">{p.nombre}</td>
                   <td className="px-3 py-2 text-right ev-mono" style={{ color: T.muted }}>{p.dia}</td>
                   <td className="px-3 py-2 text-right ev-mono" style={{ color: T.muted }}>{p.noche}</td>
-                  <td className="px-3 py-2 text-right ev-mono" style={{ color: p.domingos > 0 ? T.danger : T.muted }}>{p.domingos}</td>
-                  <td className="px-3 py-2 text-right ev-mono" style={{ color: p.festivos > 0 ? T.danger : T.muted }}>{p.festivos}</td>
+                  <td className="px-3 py-2 text-right ev-mono" style={{ color: p.domingoDia > 0 ? T.danger : T.muted }}>{p.domingoDia}</td>
+                  <td className="px-3 py-2 text-right ev-mono" style={{ color: p.domingoNoche > 0 ? T.danger : T.muted }}>{p.domingoNoche}</td>
+                  <td className="px-3 py-2 text-right ev-mono" style={{ color: p.festivoDia > 0 ? T.danger : T.muted }}>{p.festivoDia}</td>
+                  <td className="px-3 py-2 text-right ev-mono" style={{ color: p.festivoNoche > 0 ? T.danger : T.muted }}>{p.festivoNoche}</td>
                 </tr>
               ))}
               {resumenPorPersona.length === 0 && (
-                <tr><td colSpan={5} className="px-4 py-5 text-center" style={{ color: T.muted }}>No hay colaboradores registrados para turnos.</td></tr>
+                <tr><td colSpan={7} className="px-4 py-5 text-center" style={{ color: T.muted }}>No hay colaboradores registrados para turnos.</td></tr>
               )}
             </tbody>
           </table>
