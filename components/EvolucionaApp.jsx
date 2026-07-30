@@ -1326,9 +1326,9 @@ function sugerirReemplazo({ turno, personal, eventosExistentes, reglas, novedade
   return candidatos[0] || null;
 }
 
-function TurnosMesGrid({ ctx }) {
+function TurnosMesGrid({ ctx, filtroPersonalId }) {
   const { isMaestro, events, monthOffset, setMonthOffset, setDetail, reglas, festivos } = ctx;
-  const turnos = events.filter((e) => TURNO_TYPES.includes(e.type));
+  const turnos = events.filter((e) => TURNO_TYPES.includes(e.type) && (!filtroPersonalId || e.personalId === filtroPersonalId));
   const festivoSet = new Set((festivos || []).map((f) => f.fecha));
   const base = new Date(TODAY.getFullYear(), TODAY.getMonth() + monthOffset, 1);
   const gridStart = getMonday(new Date(base.getFullYear(), base.getMonth(), 1));
@@ -1409,6 +1409,7 @@ function TurnosCalendario({ ctx }) {
 
   // Rango personalizado para las tablas de resumen (independiente del mes que se esté viendo en el calendario)
   const [usarRango, setUsarRango] = useState(false);
+  const [filtroPersonal, setFiltroPersonal] = useState(""); // "" = todos
   const [rangoDesde, setRangoDesde] = useState(toISO(new Date(base.getFullYear(), base.getMonth(), 1)));
   const [rangoHasta, setRangoHasta] = useState(toISO(new Date(base.getFullYear(), base.getMonth() + 1, 0)));
 
@@ -1425,7 +1426,9 @@ function TurnosCalendario({ ctx }) {
       })()
     : semanasDelMes;
 
-  const horasPorSemana = baseParaResumen.map((p) => {
+  const personasParaTablas = filtroPersonal ? baseParaResumen.filter((p) => p.id === filtroPersonal) : baseParaResumen;
+
+  const horasPorSemana = personasParaTablas.map((p) => {
     const porSemana = semanasResumen.map((semana) => {
       const fechas = semana.map(toISO).filter((f) => f >= primerDiaResumen && f <= ultimoDiaResumen);
       return turnos.filter((t) => t.personalId === p.id && fechas.includes(t.date)).reduce((a, t) => a + horasEfectivas(t), 0);
@@ -1434,7 +1437,7 @@ function TurnosCalendario({ ctx }) {
   });
 
   const turnosDelRango = turnos.filter((t) => t.date >= primerDiaResumen && t.date <= ultimoDiaResumen);
-  const resumenPorPersona = baseParaResumen.map((p) => {
+  const resumenPorPersona = personasParaTablas.map((p) => {
     const suyos = turnosDelRango.filter((t) => t.personalId === p.id);
     const esDomingo = (t) => new Date(`${t.date}T00:00:00`).getDay() === 0;
     return {
@@ -1461,7 +1464,20 @@ function TurnosCalendario({ ctx }) {
         </div>
       )}
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <Legend types={TURNO_TYPES} />
+        <div className="flex items-center gap-3 flex-wrap">
+          <Legend types={TURNO_TYPES} />
+          <select
+            value={filtroPersonal}
+            onChange={(e) => setFiltroPersonal(e.target.value)}
+            className="text-[12.5px] rounded-lg px-2.5 py-1.5"
+            style={{ border: `1px solid ${T.border}`, background: T.surface, color: T.ink }}
+          >
+            <option value="">Todo el personal</option>
+            {baseParaResumen.map((p) => (
+              <option key={p.id} value={p.id}>{p.nombre}</option>
+            ))}
+          </select>
+        </div>
         {isMaestro && (
           <div className="flex gap-2">
             <button
@@ -1483,7 +1499,7 @@ function TurnosCalendario({ ctx }) {
       </div>
       {generarOpen && <GenerarTurnosModal ctx={ctx} onClose={() => setGenerarOpen(false)} />}
 
-      <TurnosMesGrid ctx={ctx} />
+      <TurnosMesGrid ctx={ctx} filtroPersonalId={filtroPersonal} />
 
       <div className="ev-card p-4 max-w-3xl">
         <label className="flex items-center gap-2 text-[13px] font-medium mb-1">
@@ -1505,7 +1521,7 @@ function TurnosCalendario({ ctx }) {
       <div className="ev-card overflow-hidden max-w-2xl">
         <div className="px-4 py-3 border-b" style={{ borderColor: T.border }}>
           <h3 className="ev-display font-semibold text-[13.5px]">
-            Horas por colaborador · {usarRango
+            {filtroPersonal ? `Horas de ${personById(filtroPersonal)?.nombre}` : "Horas por colaborador"} · {usarRango
               ? `${new Date(`${rangoDesde}T00:00:00`).toLocaleDateString("es-CO", { day: "numeric", month: "short" })} – ${new Date(`${rangoHasta}T00:00:00`).toLocaleDateString("es-CO", { day: "numeric", month: "short" })}`
               : `por semana de ${MES_LABEL[base.getMonth()]}`}
           </h3>
@@ -1549,7 +1565,7 @@ function TurnosCalendario({ ctx }) {
       <div className="ev-card overflow-hidden max-w-3xl">
         <div className="px-4 py-3 border-b" style={{ borderColor: T.border }}>
           <h3 className="ev-display font-semibold text-[13.5px]">
-            Resumen de turnos · {usarRango
+            {filtroPersonal ? `Resumen de turnos de ${personById(filtroPersonal)?.nombre}` : "Resumen de turnos"} · {usarRango
               ? `${new Date(`${rangoDesde}T00:00:00`).toLocaleDateString("es-CO", { day: "numeric", month: "short" })} – ${new Date(`${rangoHasta}T00:00:00`).toLocaleDateString("es-CO", { day: "numeric", month: "short", year: "numeric" })}`
               : `${MES_LABEL[base.getMonth()]} ${base.getFullYear()}`}
           </h3>
