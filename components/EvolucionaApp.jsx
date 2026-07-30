@@ -782,18 +782,18 @@ export default function EvolucionaApp() {
 
       {/* Sidebar */}
       <aside
-        className={`no-print flex-col justify-between border-r ${sidebarOpen ? "flex fixed inset-y-0 left-0 z-40 w-64" : "hidden"} lg:flex lg:static lg:w-60`}
+        className={`no-print group flex-col justify-between border-r transition-[width] duration-200 ease-in-out ${sidebarOpen ? "flex fixed inset-y-0 left-0 z-40 w-64" : "hidden"} lg:flex lg:fixed lg:inset-y-0 lg:left-0 lg:z-40 lg:w-16 lg:hover:w-60 lg:overflow-hidden`}
         style={{ background: T.primaryDark, borderColor: T.border }}
       >
         <div>
           <div className="px-5 pt-6 pb-5">
             <div className="flex items-center gap-2">
-              <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: T.accent }}>
+              <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: T.accent }}>
                 <Sparkles size={16} color={T.primaryDark} />
               </div>
-              <span className="ev-display text-white text-[19px] tracking-tight font-semibold">EVOLUCIONA</span>
+              <span className="ev-display text-white text-[19px] tracking-tight font-semibold whitespace-nowrap lg:opacity-0 lg:group-hover:opacity-100 transition-opacity duration-150">EVOLUCIONA</span>
             </div>
-            <p className="text-[11px] mt-1 leading-snug" style={{ color: "#BFE0D6" }}>
+            <p className="text-[11px] mt-1 leading-snug whitespace-nowrap lg:opacity-0 lg:group-hover:opacity-100 transition-opacity duration-150" style={{ color: "#BFE0D6" }}>
               Sistema inteligente de planificación de actividades y turnos
             </p>
           </div>
@@ -805,21 +805,22 @@ export default function EvolucionaApp() {
                 <button
                   key={n.key}
                   onClick={() => { setView(n.key); setSidebarOpen(false); }}
+                  title={n.label}
                   className="ev-nav-item text-left px-3 py-2.5 rounded-lg flex items-center gap-3 text-[13.5px] font-medium"
                   style={{
                     background: active ? "rgba(255,255,255,0.12)" : "transparent",
                     color: active ? "#FFFFFF" : "#CFE3DC",
                   }}
                 >
-                  <Icon size={16} />
-                  {n.label}
+                  <Icon size={18} className="shrink-0" />
+                  <span className="whitespace-nowrap lg:opacity-0 lg:group-hover:opacity-100 transition-opacity duration-150">{n.label}</span>
                 </button>
               );
             })}
           </nav>
         </div>
-        <div className="px-4 pb-5 pt-4 border-t" style={{ borderColor: "rgba(255,255,255,0.12)" }}>
-          <div className="rounded-lg p-3" style={{ background: "rgba(255,255,255,0.08)" }}>
+        <div className="px-4 pb-5 pt-4 border-t lg:hidden lg:group-hover:block" style={{ borderColor: "rgba(255,255,255,0.12)" }}>
+          <div className="rounded-lg p-3 whitespace-nowrap" style={{ background: "rgba(255,255,255,0.08)" }}>
             <p className="text-[11px] font-semibold text-white">V1.0 · MVP</p>
             <p className="text-[10.5px] mt-1" style={{ color: "#BFE0D6" }}>
               V2 traerá asignación automática de turnos. V3, IA integrada.
@@ -832,7 +833,7 @@ export default function EvolucionaApp() {
       )}
 
       {/* Main */}
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-0 lg:pl-16">
         <header
           className="no-print flex items-center justify-between px-5 lg:px-8 py-4 border-b"
           style={{ background: T.surface, borderColor: T.border }}
@@ -1365,11 +1366,11 @@ function TurnosMesGrid({ ctx }) {
             <div
               key={i}
               onClick={() => isMaestro && ctx.setModal({ mode: "new", event: null, defaultType: "turno_dia", prefill: { date: dISO, start: 7, end: 17 } })}
-              className={`border-b border-r p-1.5 flex flex-col gap-1 min-h-[112px] ${isMaestro ? "cursor-pointer hover:bg-black/[0.02]" : ""}`}
+              className={`border-b border-r p-2 flex flex-col gap-1.5 min-h-[132px] ${isMaestro ? "cursor-pointer hover:bg-black/[0.02]" : ""}`}
               style={{ borderColor: T.border, opacity: inMonth ? 1 : 0.4, background: festivoNombre ? T.accentSoft : "transparent" }}
               title={festivoNombre || undefined}
             >
-              <span className="ev-display text-[11.5px] font-semibold w-5 h-5 flex items-center justify-center rounded-full shrink-0" style={{ background: dISO === todayISO ? T.primary : "transparent", color: dISO === todayISO ? "#fff" : T.ink }}>
+              <span className="ev-display text-[13px] font-semibold w-6 h-6 flex items-center justify-center rounded-full shrink-0" style={{ background: dISO === todayISO ? T.primary : "transparent", color: dISO === todayISO ? "#fff" : T.ink }}>
                 {d.getDate()}
               </span>
               <TurnoMiniBox tipo="turno_dia" chips={dia} onChipClick={setDetail} min={minRequeridoTurno(dISO, "turno_dia", reglas, festivoSet)} reglas={reglas} />
@@ -1510,12 +1511,12 @@ function TurnosCalendario({ ctx }) {
           </h3>
         </div>
         <div className="overflow-x-auto ev-scroll">
-          <table className="w-full text-[12.5px]">
+          <table className="w-full text-[13.5px]">
             <thead>
               <tr className="text-left" style={{ color: T.muted }}>
-                <th className="px-4 py-2 font-medium text-[11px] uppercase tracking-wide">Colaborador</th>
+                <th className="px-4 py-2 font-medium text-[12px] uppercase tracking-wide">Colaborador</th>
                 {semanasResumen.map((semana, i) => (
-                  <th key={i} className="px-3 py-2 font-medium text-[11px] uppercase tracking-wide text-right">
+                  <th key={i} className="px-3 py-2 font-medium text-[12px] uppercase tracking-wide text-right">
                     {usarRango
                       ? `${semana[0].toLocaleDateString("es-CO", { day: "numeric", month: "short" })}–${semana[6].toLocaleDateString("es-CO", { day: "numeric", month: "short" })}`
                       : `Semana ${i + 1}`}
@@ -1555,21 +1556,21 @@ function TurnosCalendario({ ctx }) {
           <p className="text-[11.5px]" style={{ color: T.muted }}>Número de turnos por persona en el mes, separados por tipo.</p>
         </div>
         <div className="overflow-x-auto ev-scroll">
-          <table className="w-full text-[12.5px]">
+          <table className="w-full text-[13.5px]">
             <thead>
               <tr className="text-left" style={{ color: T.muted }}>
-                <th rowSpan={2} className="px-4 py-2 font-medium text-[11px] uppercase tracking-wide align-bottom">Colaborador</th>
-                <th colSpan={2} className="px-3 py-1 font-medium text-[10.5px] uppercase tracking-wide text-center border-b" style={{ borderColor: T.border }}>Total</th>
-                <th colSpan={2} className="px-3 py-1 font-medium text-[10.5px] uppercase tracking-wide text-center border-b" style={{ borderColor: T.border }}>Domingo</th>
-                <th colSpan={2} className="px-3 py-1 font-medium text-[10.5px] uppercase tracking-wide text-center border-b" style={{ borderColor: T.border }}>Festivo</th>
+                <th rowSpan={2} className="px-4 py-2 font-medium text-[12px] uppercase tracking-wide align-bottom">Colaborador</th>
+                <th colSpan={2} className="px-3 py-1 font-medium text-[11.5px] uppercase tracking-wide text-center border-b" style={{ borderColor: T.border }}>Total</th>
+                <th colSpan={2} className="px-3 py-1 font-medium text-[11.5px] uppercase tracking-wide text-center border-b" style={{ borderColor: T.border }}>Domingo</th>
+                <th colSpan={2} className="px-3 py-1 font-medium text-[11.5px] uppercase tracking-wide text-center border-b" style={{ borderColor: T.border }}>Festivo</th>
               </tr>
               <tr className="text-left" style={{ color: T.muted }}>
-                <th className="px-3 py-1.5 font-medium text-[11px] uppercase tracking-wide text-right">Día</th>
-                <th className="px-3 py-1.5 font-medium text-[11px] uppercase tracking-wide text-right">Noche</th>
-                <th className="px-3 py-1.5 font-medium text-[11px] uppercase tracking-wide text-right">Día</th>
-                <th className="px-3 py-1.5 font-medium text-[11px] uppercase tracking-wide text-right">Noche</th>
-                <th className="px-3 py-1.5 font-medium text-[11px] uppercase tracking-wide text-right">Día</th>
-                <th className="px-3 py-1.5 font-medium text-[11px] uppercase tracking-wide text-right">Noche</th>
+                <th className="px-3 py-1.5 font-medium text-[12px] uppercase tracking-wide text-right">Día</th>
+                <th className="px-3 py-1.5 font-medium text-[12px] uppercase tracking-wide text-right">Noche</th>
+                <th className="px-3 py-1.5 font-medium text-[12px] uppercase tracking-wide text-right">Día</th>
+                <th className="px-3 py-1.5 font-medium text-[12px] uppercase tracking-wide text-right">Noche</th>
+                <th className="px-3 py-1.5 font-medium text-[12px] uppercase tracking-wide text-right">Día</th>
+                <th className="px-3 py-1.5 font-medium text-[12px] uppercase tracking-wide text-right">Noche</th>
               </tr>
             </thead>
             <tbody>
@@ -1603,25 +1604,25 @@ function TurnoMiniBox({ tipo, chips, onChipClick, min, reglas }) {
     && personasDelTurno.some((p) => esOperador(p.cargo, reglas))
     && !personasDelTurno.some((p) => esAuxiliar(p.cargo, reglas));
   return (
-    <div className="rounded px-1 py-0.5" style={{ background: `${color}14`, outline: (falta || sinAcompanamiento) ? `1px solid ${T.danger}` : "none" }}>
-      <p className="text-[8.5px] font-semibold uppercase tracking-wide flex items-center gap-1" style={{ color }}>
+    <div className="rounded px-1.5 py-1" style={{ background: `${color}14`, outline: (falta || sinAcompanamiento) ? `1px solid ${T.danger}` : "none" }}>
+      <p className="text-[10px] font-semibold uppercase tracking-wide flex items-center gap-1" style={{ color }}>
         {tipo === "turno_dia" ? "Día" : "Noche"}
-        {(falta || sinAcompanamiento) && <AlertTriangle size={9} style={{ color: T.danger }} />}
+        {(falta || sinAcompanamiento) && <AlertTriangle size={10} style={{ color: T.danger }} />}
       </p>
-      {chips.length === 0 && <p className="text-[9px]" style={{ color: T.muted }}>—</p>}
+      {chips.length === 0 && <p className="text-[10.5px]" style={{ color: T.muted }}>—</p>}
       {chips.map((c) => (
         <button
           key={c.id}
           onClick={(ev) => { ev.stopPropagation(); onChipClick(c); }}
-          className="block w-full text-left text-[9.5px] leading-tight truncate hover:underline"
+          className="block w-full text-left text-[11px] leading-tight truncate hover:underline"
           style={{ color: T.ink }}
           title={`${personName(c.personalId)} · ${fmtRange(c.start, c.end)} · ${horasEfectivas(c)}h`}
         >
           {personName(c.personalId)} <span className="ev-mono" style={{ color: T.muted }}>{horasEfectivas(c)}h</span>
         </button>
       ))}
-      {falta && <p className="text-[8px]" style={{ color: T.danger }}>Faltan {min - chips.length}</p>}
-      {!falta && sinAcompanamiento && <p className="text-[8px]" style={{ color: T.danger }}>Sin auxiliar</p>}
+      {falta && <p className="text-[9.5px]" style={{ color: T.danger }}>Faltan {min - chips.length}</p>}
+      {!falta && sinAcompanamiento && <p className="text-[9.5px]" style={{ color: T.danger }}>Sin auxiliar</p>}
     </div>
   );
 }
@@ -1759,7 +1760,7 @@ function Legend({ types }) {
   return (
     <div className="hidden xl:flex items-center gap-3 flex-wrap">
       {entries.map(([k, v]) => (
-        <span key={k} className="flex items-center gap-1.5 text-[11.5px]" style={{ color: T.muted }}>
+        <span key={k} className="flex items-center gap-1.5 text-[12.5px]" style={{ color: T.muted }}>
           <span className="w-2 h-2 rounded-full" style={{ background: v.color }} /> {v.label}
         </span>
       ))}
