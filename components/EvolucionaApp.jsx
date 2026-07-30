@@ -437,6 +437,14 @@ function fmtHour(h) {
 function fmtRange(s, e) {
   return `${fmtHour(s)} – ${fmtHour(e)}${e > 24 ? " +1" : ""}`;
 }
+// Para los <input type="time"> de Actividades (permiten medias horas, cuartos, etc.)
+function horaATimeValue(h) {
+  return fmtHour(h);
+}
+function timeValueAHora(v) {
+  const [hh, mm] = v.split(":").map(Number);
+  return hh + mm / 60;
+}
 // Horas que realmente cuentan para el pago/control: el turno noche
 // tiene 2 horas de descanso, así que sus 14h de reloj cuentan como 12h.
 const DESCANSO_NOCHE = 2;
@@ -1009,18 +1017,56 @@ function Toast({ toast }) {
 }
 
 /* ============================== DASHBOARD ============================== */
+// Alertas reales del dashboard: turnos próximos sin cubrir, personal que
+// supera sus horas semanales, y personal inactivo con algo asignado.
+function calcularAlertasDashboard(events, personal, reglas) {
+  const alerts = [];
+  const todayISO = toISO(TODAY);
+  const monday = getMonday(TODAY);
+  const semanaISO = Array.from({ length: 7 }, (_, i) => toISO(addDays(monday, i)));
+  const proximos7ISO = Array.from({ length: 7 }, (_, i) => toISO(addDays(TODAY, i)));
+
+  events
+    .filter((e) => TURNO_TYPES.includes(e.type) && !e.personalId && proximos7ISO.includes(e.date))
+    .sort((a, b) => a.date.localeCompare(b.date) || a.start - b.start)
+    .slice(0, 5)
+    .forEach((e) => {
+      const diaTxt = new Date(`${e.date}T00:00:00`).toLocaleDateString("es-CO", { weekday: "long", day: "numeric", month: "short" });
+      alerts.push({ level: "danger", text: `${ACTIVITY_TYPES[e.type].label} del ${diaTxt} sin responsable asignado` });
+    });
+
+  personal
+    .filter((p) => p.estado === "activo")
+    .forEach((p) => {
+      const horas = events
+        .filter((e) => TURNO_TYPES.includes(e.type) && e.personalId === p.id && semanaISO.includes(e.date))
+        .reduce((a, e) => a + horasEfectivas(e), 0);
+      const limite = reglas?.horasSemanaObjetivo ?? p.horas;
+      if (horas > limite) {
+        alerts.push({ level: "warn", text: `${p.nombre} supera las ${limite} horas semanales asignadas (${horas}h)` });
+      }
+    });
+
+  personal
+    .filter((p) => p.estado === "inactivo")
+    .forEach((p) => {
+      const tieneAsignado = events.some((e) => e.personalId === p.id && e.date >= todayISO);
+      if (tieneAsignado) {
+        alerts.push({ level: "warn", text: `${p.nombre} está inactivo y aparece en una actividad o turno próximo` });
+      }
+    });
+
+  return alerts;
+}
+
 function Dashboard({ ctx }) {
-  const { events, personal, setView, setModal } = ctx;
+  const { events, personal, reglas, setView, setModal } = ctx;
   const todayISO = toISO(TODAY);
   const todayEvents = events.filter((e) => e.date === todayISO).sort((a, b) => a.start - b.start);
   const activos = personal.filter((p) => p.estado === "activo").length;
   const turnosHoy = todayEvents.filter((e) => e.type === "turno_dia" || e.type === "turno_noche").length;
 
-  const alerts = [
-    { level: "danger", text: "Turno Noche del sábado sin responsable asignado" },
-    { level: "warn", text: "Jorge Pardo supera las 44 horas semanales asignadas" },
-    { level: "warn", text: "Andrés Ruiz está inactivo y aparece en un turno del viernes" },
-  ];
+  const alerts = calcularAlertasDashboard(events, personal, reglas);
 
   const proximas = events
     .filter((e) => e.date >= todayISO)
@@ -1084,6 +1130,9 @@ function Dashboard({ ctx }) {
                 {a.text}
               </div>
             ))}
+            {alerts.length === 0 && (
+              <p className="text-[12.5px] text-center py-4" style={{ color: T.muted }}>Sin alertas por ahora.</p>
+            )}
           </div>
         </div>
       </div>
@@ -1788,6 +1837,42 @@ const HOUR_START = 6;
 const HOUR_END = 24;
 const ROW_H = 52;
 
+// Cuando dos o más actividades coinciden en el mismo horario (ej. dos grupos
+// distintos a las 8am), esta función les asigna columnas para mostrarse una
+// junto a la otra en vez de encimarse.
+function calcularColumnasSolapadas(eventosDia) {
+  const ordenados = [...eventosDia].sort((a, b) => a.start - b.start || a.end - b.end);
+  const resultado = [];
+  let cluster = [];
+  let finCluster = -Infinity;
+
+  function procesarCluster(grupo) {
+    const columnas = []; // guarda el "end" ocupado por cada columna
+    const conCol = grupo.map((ev) => {
+      let colIdx = columnas.findIndex((finCol) => finCol <= ev.start);
+      if (colIdx === -1) { columnas.push(ev.end); colIdx = columnas.length - 1; }
+      else columnas[colIdx] = ev.end;
+      return { ...ev, col: colIdx };
+    });
+    const totalCols = columnas.length;
+    conCol.forEach((ev) => resultado.push({ ...ev, totalCols }));
+  }
+
+  ordenados.forEach((ev) => {
+    if (cluster.length === 0 || ev.start < finCluster) {
+      cluster.push(ev);
+      finCluster = Math.max(finCluster, ev.end);
+    } else {
+      procesarCluster(cluster);
+      cluster = [ev];
+      finCluster = ev.end;
+    }
+  });
+  if (cluster.length) procesarCluster(cluster);
+
+  return resultado;
+}
+
 function WeekView({ ctx, types }) {
   const { weekDays, weekOffset, setWeekOffset, events, setDetail, setModal, isMaestro } = ctx;
   const todayISO = toISO(TODAY);
@@ -1843,17 +1928,20 @@ function WeekView({ ctx, types }) {
                     style={{ top: (h - HOUR_START) * ROW_H, height: ROW_H, borderColor: "#EEF1EF" }}
                   />
                 ))}
-                {dayEvents.map((e) => {
+                {calcularColumnasSolapadas(dayEvents).map((e) => {
                   const top = (Math.max(e.start, HOUR_START) - HOUR_START) * ROW_H;
                   const bottom = (Math.min(e.end, HOUR_END) - HOUR_START) * ROW_H;
                   const color = ACTIVITY_TYPES[e.type].color;
+                  const anchoPct = 100 / e.totalCols;
                   return (
                     <div
                       key={e.id}
                       onClick={(ev) => { ev.stopPropagation(); setDetail(e); }}
-                      className="absolute left-1 right-1 rounded-md px-2 py-1 cursor-pointer overflow-hidden hover:shadow-md transition-shadow"
+                      className="absolute rounded-md px-2 py-1 cursor-pointer overflow-hidden hover:shadow-md hover:z-10 transition-shadow"
                       style={{
                         top, height: Math.max(bottom - top, 24),
+                        left: `calc(${e.col * anchoPct}% + 2px)`,
+                        width: `calc(${anchoPct}% - 4px)`,
                         background: `${color}1A`, borderLeft: `3px solid ${color}`,
                       }}
                     >
@@ -2546,12 +2634,25 @@ function EventModal({ ctx, onClose, onSave, initial }) {
             </Field>
           )}
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Hora inicio">
-              <input type="number" min={0} max={23} value={form.start} onChange={(e) => set("start", parseFloat(e.target.value))} style={inputStyle} />
-            </Field>
-            <Field label="Hora fin">
-              <input type="number" min={0} max={32} value={form.end} onChange={(e) => set("end", parseFloat(e.target.value))} style={inputStyle} />
-            </Field>
+            {esTurno ? (
+              <>
+                <Field label="Hora inicio">
+                  <input type="number" min={0} max={23} value={form.start} onChange={(e) => set("start", parseFloat(e.target.value))} style={inputStyle} />
+                </Field>
+                <Field label="Hora fin">
+                  <input type="number" min={0} max={32} value={form.end} onChange={(e) => set("end", parseFloat(e.target.value))} style={inputStyle} />
+                </Field>
+              </>
+            ) : (
+              <>
+                <Field label="Hora inicio">
+                  <input type="time" step={300} value={horaATimeValue(form.start)} onChange={(e) => e.target.value && set("start", timeValueAHora(e.target.value))} style={inputStyle} />
+                </Field>
+                <Field label="Hora fin">
+                  <input type="time" step={300} value={horaATimeValue(form.end)} onChange={(e) => e.target.value && set("end", timeValueAHora(e.target.value))} style={inputStyle} />
+                </Field>
+              </>
+            )}
           </div>
           {form.type === "turno_noche" && (
             <p className="text-[11.5px] -mt-2" style={{ color: T.muted }}>
