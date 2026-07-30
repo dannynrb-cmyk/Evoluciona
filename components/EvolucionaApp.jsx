@@ -1366,15 +1366,15 @@ function TurnosMesGrid({ ctx, filtroPersonalId }) {
             <div
               key={i}
               onClick={() => isMaestro && ctx.setModal({ mode: "new", event: null, defaultType: "turno_dia", prefill: { date: dISO, start: 7, end: 17 } })}
-              className={`border-b border-r p-2 flex flex-col gap-1.5 min-h-[132px] ${isMaestro ? "cursor-pointer hover:bg-black/[0.02]" : ""}`}
+              className={`border-b border-r p-1.5 flex flex-col gap-1 min-h-[102px] ${isMaestro ? "cursor-pointer hover:bg-black/[0.02]" : ""}`}
               style={{ borderColor: T.border, opacity: inMonth ? 1 : 0.4, background: festivoNombre ? T.accentSoft : "transparent" }}
               title={festivoNombre || undefined}
             >
-              <span className="ev-display text-[13px] font-semibold w-6 h-6 flex items-center justify-center rounded-full shrink-0" style={{ background: dISO === todayISO ? T.primary : "transparent", color: dISO === todayISO ? "#fff" : T.ink }}>
+              <span className="ev-display text-[12px] font-semibold w-5 h-5 flex items-center justify-center rounded-full shrink-0" style={{ background: dISO === todayISO ? T.primary : "transparent", color: dISO === todayISO ? "#fff" : T.ink }}>
                 {d.getDate()}
               </span>
-              <TurnoMiniBox tipo="turno_dia" chips={dia} onChipClick={setDetail} min={minRequeridoTurno(dISO, "turno_dia", reglas, festivoSet)} reglas={reglas} />
-              <TurnoMiniBox tipo="turno_noche" chips={noche} onChipClick={setDetail} min={minRequeridoTurno(dISO, "turno_noche", reglas, festivoSet)} reglas={reglas} />
+              <TurnoMiniBox tipo="turno_dia" chips={dia} onChipClick={setDetail} min={filtroPersonalId ? undefined : minRequeridoTurno(dISO, "turno_dia", reglas, festivoSet)} reglas={filtroPersonalId ? null : reglas} />
+              <TurnoMiniBox tipo="turno_noche" chips={noche} onChipClick={setDetail} min={filtroPersonalId ? undefined : minRequeridoTurno(dISO, "turno_noche", reglas, festivoSet)} reglas={filtroPersonalId ? null : reglas} />
             </div>
           );
         })}
@@ -1620,25 +1620,25 @@ function TurnoMiniBox({ tipo, chips, onChipClick, min, reglas }) {
     && personasDelTurno.some((p) => esOperador(p.cargo, reglas))
     && !personasDelTurno.some((p) => esAuxiliar(p.cargo, reglas));
   return (
-    <div className="rounded px-1.5 py-1" style={{ background: `${color}14`, outline: (falta || sinAcompanamiento) ? `1px solid ${T.danger}` : "none" }}>
-      <p className="text-[10px] font-semibold uppercase tracking-wide flex items-center gap-1" style={{ color }}>
+    <div className="rounded px-1 py-0.5" style={{ background: `${color}14`, outline: (falta || sinAcompanamiento) ? `1px solid ${T.danger}` : "none" }}>
+      <p className="text-[9px] font-semibold uppercase tracking-wide flex items-center gap-1" style={{ color }}>
         {tipo === "turno_dia" ? "Día" : "Noche"}
-        {(falta || sinAcompanamiento) && <AlertTriangle size={10} style={{ color: T.danger }} />}
+        {(falta || sinAcompanamiento) && <AlertTriangle size={9} style={{ color: T.danger }} />}
       </p>
-      {chips.length === 0 && <p className="text-[10.5px]" style={{ color: T.muted }}>—</p>}
+      {chips.length === 0 && <p className="text-[9.5px]" style={{ color: T.muted }}>—</p>}
       {chips.map((c) => (
         <button
           key={c.id}
           onClick={(ev) => { ev.stopPropagation(); onChipClick(c); }}
-          className="block w-full text-left text-[11px] leading-tight truncate hover:underline"
+          className="block w-full text-left text-[10px] leading-tight truncate hover:underline"
           style={{ color: T.ink }}
           title={`${personName(c.personalId)} · ${fmtRange(c.start, c.end)} · ${horasEfectivas(c)}h`}
         >
           {personName(c.personalId)} <span className="ev-mono" style={{ color: T.muted }}>{horasEfectivas(c)}h</span>
         </button>
       ))}
-      {falta && <p className="text-[9.5px]" style={{ color: T.danger }}>Faltan {min - chips.length}</p>}
-      {!falta && sinAcompanamiento && <p className="text-[9.5px]" style={{ color: T.danger }}>Sin auxiliar</p>}
+      {falta && <p className="text-[8.5px]" style={{ color: T.danger }}>Faltan {min - chips.length}</p>}
+      {!falta && sinAcompanamiento && <p className="text-[8.5px]" style={{ color: T.danger }}>Sin auxiliar</p>}
     </div>
   );
 }
