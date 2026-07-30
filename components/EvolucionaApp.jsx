@@ -195,7 +195,7 @@ function mapUsuario(row) {
 }
 
 async function fetchAllRemote() {
-  const [personalRows, actRows, turnRows, bibRows, reglasRow, festivoRows, novedadRows, reglaPersonalRows] = await Promise.all([
+  const [personalRows, actRows, turnRows, bibRows, reglasRow, festivoRows, novedadRows, reglaPersonalRows, plantillaRows, plantillaItemRows] = await Promise.all([
     sb("personal?select=*&order=nombre"),
     sb("actividades?select=*"),
     sb("turnos?select=*"),
@@ -204,6 +204,8 @@ async function fetchAllRemote() {
     sb("festivos?select=*&order=fecha"),
     sb("novedades?select=*&order=fecha_inicio.desc"),
     sb("reglas_personal?select=*"),
+    sb("plantillas_semanales?select=*&order=nombre"),
+    sb("plantilla_actividades?select=*"),
   ]);
   return {
     personal: personalRows.map(mapPersonal),
@@ -213,6 +215,8 @@ async function fetchAllRemote() {
     festivos: festivoRows.map(mapFestivo),
     novedades: novedadRows.map(mapNovedad),
     reglasPersonal: reglaPersonalRows.map(mapReglaPersonal),
+    plantillas: plantillaRows.map(mapPlantilla),
+    plantillaItems: plantillaItemRows.map(mapPlantillaItem),
   };
 }
 async function fetchEventsRemote() {
@@ -378,6 +382,47 @@ async function deleteReglaPersonalRemote(id) {
   await sb(`reglas_personal?id=eq.${id}`, { method: "DELETE", prefer: "return=minimal" });
 }
 
+function mapPlantilla(row) {
+  return { id: row.id, nombre: row.nombre };
+}
+async function fetchPlantillas() {
+  const rows = await sb("plantillas_semanales?select=*&order=nombre");
+  return rows.map(mapPlantilla);
+}
+async function insertPlantillaRemote(nombre) {
+  const [row] = await sb("plantillas_semanales", { method: "POST", body: JSON.stringify({ nombre }) });
+  return mapPlantilla(row);
+}
+async function deletePlantillaRemote(id) {
+  await sb(`plantillas_semanales?id=eq.${id}`, { method: "DELETE", prefer: "return=minimal" });
+}
+
+function mapPlantillaItem(row) {
+  return {
+    id: row.id, plantillaId: row.plantilla_id, diaSemana: row.dia_semana, nombre: row.nombre, tipo: row.tipo,
+    horaInicio: Number(row.hora_inicio), horaFin: Number(row.hora_fin), responsableId: row.responsable_id,
+    metodologia: row.metodologia || "", objetivos: row.objetivos || "",
+  };
+}
+async function fetchPlantillaItems() {
+  const rows = await sb("plantilla_actividades?select=*");
+  return rows.map(mapPlantillaItem);
+}
+async function insertPlantillaItemRemote(form) {
+  const [row] = await sb("plantilla_actividades", {
+    method: "POST",
+    body: JSON.stringify({
+      plantilla_id: form.plantillaId, dia_semana: Number(form.diaSemana), nombre: form.nombre, tipo: form.tipo,
+      hora_inicio: Number(form.horaInicio), hora_fin: Number(form.horaFin), responsable_id: form.responsableId || null,
+      metodologia: form.metodologia || null, objetivos: form.objetivos || null,
+    }),
+  });
+  return mapPlantillaItem(row);
+}
+async function deletePlantillaItemRemote(id) {
+  await sb(`plantilla_actividades?id=eq.${id}`, { method: "DELETE", prefer: "return=minimal" });
+}
+
 /* ============================== DATA ============================== */
 const TODAY = (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; })(); // fecha real de hoy
 let PERSONAL_STATE = []; // se llena al cargar desde Supabase; usado por personName/personById
@@ -481,6 +526,11 @@ export default function EvolucionaApp() {
   const [festivos, setFestivos] = useState([]);
   const [novedades, setNovedades] = useState([]);
   const [reglasPersonal, setReglasPersonal] = useState([]);
+  const [plantillas, setPlantillas] = useState([]);
+  const [plantillaItems, setPlantillaItems] = useState([]);
+  const [plantillaModal, setPlantillaModal] = useState(false); // modal para crear una nueva plantilla
+  const [plantillaEditorId, setPlantillaEditorId] = useState(null); // id de la plantilla que se está editando
+  const [aplicarPlantillaModal, setAplicarPlantillaModal] = useState(null); // {plantillaId}
   const [weekOffset, setWeekOffset] = useState(0);
   const [calMode, setCalMode] = useState("semana");
   const [monthOffset, setMonthOffset] = useState(0);
@@ -514,6 +564,8 @@ export default function EvolucionaApp() {
       setFestivos(data.festivos);
       setNovedades(data.novedades);
       setReglasPersonal(data.reglasPersonal);
+      setPlantillas(data.plantillas);
+      setPlantillaItems(data.plantillaItems);
     } catch (err) {
       setLoadError(err.message || "No se pudo conectar a Supabase.");
     } finally {
@@ -720,6 +772,72 @@ export default function EvolucionaApp() {
       showToast(`No se pudo eliminar: ${err.message}`, "warn");
     }
   }
+  async function crearPlantilla(nombre) {
+    setSaving(true);
+    try {
+      const saved = await insertPlantillaRemote(nombre);
+      setPlantillas((prev) => [...prev, saved].sort((a, b) => a.nombre.localeCompare(b.nombre)));
+      setPlantillaModal(false);
+      setPlantillaEditorId(saved.id);
+      showToast("Plantilla creada");
+    } catch (err) {
+      showToast(`No se pudo crear: ${err.message}`, "warn");
+    } finally {
+      setSaving(false);
+    }
+  }
+  async function eliminarPlantilla(id) {
+    try {
+      await deletePlantillaRemote(id);
+      setPlantillas((prev) => prev.filter((p) => p.id !== id));
+      setPlantillaItems((prev) => prev.filter((it) => it.plantillaId !== id));
+      showToast("Plantilla eliminada", "warn");
+    } catch (err) {
+      showToast(`No se pudo eliminar: ${err.message}`, "warn");
+    }
+  }
+  async function agregarPlantillaItem(form) {
+    setSaving(true);
+    try {
+      const saved = await insertPlantillaItemRemote(form);
+      setPlantillaItems((prev) => [...prev, saved]);
+      showToast("Actividad agregada a la plantilla");
+    } catch (err) {
+      showToast(`No se pudo guardar: ${err.message}`, "warn");
+    } finally {
+      setSaving(false);
+    }
+  }
+  async function eliminarPlantillaItem(id) {
+    try {
+      await deletePlantillaItemRemote(id);
+      setPlantillaItems((prev) => prev.filter((it) => it.id !== id));
+      showToast("Actividad quitada de la plantilla", "warn");
+    } catch (err) {
+      showToast(`No se pudo eliminar: ${err.message}`, "warn");
+    }
+  }
+  async function aplicarPlantilla(plantillaId, mondayISO) {
+    const items = plantillaItems.filter((it) => it.plantillaId === plantillaId);
+    if (items.length === 0) return;
+    setSaving(true);
+    try {
+      for (const it of items) {
+        const fecha = toISO(addDays(new Date(`${mondayISO}T00:00:00`), it.diaSemana));
+        await insertEventRemote({
+          type: it.tipo, title: it.nombre, date: fecha, start: it.horaInicio, end: it.horaFin,
+          personalId: it.responsableId || "", metodologia: it.metodologia, objetivos: it.objetivos,
+        });
+      }
+      setEvents(await fetchEventsRemote());
+      setAplicarPlantillaModal(null);
+      showToast(`${items.length} actividad(es) creada(s) para esa semana`);
+    } catch (err) {
+      showToast(`No se pudo aplicar la plantilla: ${err.message}`, "warn");
+    } finally {
+      setSaving(false);
+    }
+  }
   async function reemplazarTurno(turno, nuevoPersonalId) {
     setSaving(true);
     try {
@@ -743,6 +861,9 @@ export default function EvolucionaApp() {
     confirmarPropuestaTurnos,
     novedades, saveNovedad, deleteNovedad,
     reglasPersonal, saveReglaPersonal, deleteReglaPersonal,
+    plantillas, plantillaItems, plantillaModal, setPlantillaModal, plantillaEditorId, setPlantillaEditorId,
+    crearPlantilla, eliminarPlantilla, agregarPlantillaItem, eliminarPlantillaItem,
+    aplicarPlantillaModal, setAplicarPlantillaModal, aplicarPlantilla,
     reglaPersonalModal, setReglaPersonalModal,
     reemplazarTurno,
   };
@@ -888,6 +1009,8 @@ export default function EvolucionaApp() {
       {detail && <DetailDrawer ctx={ctx} event={detail} onClose={() => setDetail(null)} onEdit={() => { setModal({ mode: "edit", event: detail }); setDetail(null); }} onDelete={() => deleteEvent(detail)} />}
       {personalModal && <PersonalModal ctx={ctx} onClose={() => setPersonalModal(null)} initial={personalModal} />}
       {bibModal && <BibliotecaModal ctx={ctx} onClose={() => setBibModal(null)} initial={bibModal} />}
+      {plantillaModal && <NuevaPlantillaModal ctx={ctx} onClose={() => setPlantillaModal(false)} />}
+      {aplicarPlantillaModal && <AplicarPlantillaModal ctx={ctx} onClose={() => setAplicarPlantillaModal(null)} />}
       {toast && <Toast toast={toast} />}
     </div>
   );
@@ -951,7 +1074,7 @@ function LoginScreen({ onLogin, theme, setTheme }) {
   }
 
   return (
-    <div data-theme={theme} style={{ background: T.base, fontFamily: "'Inter', sans-serif" }} className="ev-root relative w-full min-h-[720px] flex items-center justify-center p-6 transition-colors duration-200">
+    <div data-theme={theme} style={{ background: T.base, color: T.ink, fontFamily: "'Inter', sans-serif" }} className="ev-root relative w-full min-h-[720px] flex items-center justify-center p-6 transition-colors duration-200">
       <style>{THEME_CSS}</style>
       <style>{APP_BASE_CSS}</style>
       <div className="absolute top-5 right-5">
@@ -2975,44 +3098,270 @@ function NovedadModal({ ctx, onClose }) {
 
 function Biblioteca({ ctx }) {
   const { biblioteca, isMaestro, setBibModal, deleteBiblioteca } = ctx;
+  const [tab, setTab] = useState("individuales");
   return (
     <div className="flex flex-col gap-4">
       <ReadOnlyBanner isMaestro={isMaestro} />
+      <div className="flex items-center gap-1 p-1 rounded-lg self-start" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
+        {[["individuales", "Plantillas de actividad"], ["semanales", "Plantillas semanales"]].map(([key, label]) => (
+          <button
+            key={key}
+            onClick={() => setTab(key)}
+            className="ev-btn px-3.5 py-1.5 text-[12.5px]"
+            style={{ background: tab === key ? T.primary : "transparent", color: tab === key ? "#fff" : T.ink }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "individuales" && (
+        <>
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="ev-display font-semibold text-[16px]">Biblioteca de actividades</h3>
+              <p className="text-[12.5px]" style={{ color: T.muted }}>Plantillas con metodología y objetivos, listas para reutilizar al programar.</p>
+            </div>
+            {isMaestro && (
+              <button onClick={() => setBibModal({ mode: "new", item: null })} className="ev-btn px-3.5 py-2 text-[12.5px] text-white" style={{ background: T.primary }}>
+                <Plus size={14} /> Nueva plantilla
+              </button>
+            )}
+          </div>
+          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {biblioteca.map((b) => (
+              <div key={b.id} className="ev-card p-4 flex flex-col gap-2">
+                <span className="self-start px-2 py-0.5 rounded-full text-[11px] font-semibold" style={{ background: `${ACTIVITY_TYPES[b.tipo].color}1A`, color: ACTIVITY_TYPES[b.tipo].color }}>
+                  {ACTIVITY_TYPES[b.tipo].label}
+                </span>
+                <h4 className="font-semibold text-[14px]">{b.nombre}</h4>
+                {b.metodologia && <p className="text-[12px] line-clamp-3" style={{ color: T.muted }}><strong>Metodología:</strong> {b.metodologia}</p>}
+                {b.objetivos && <p className="text-[12px] line-clamp-2" style={{ color: T.muted }}><strong>Objetivos:</strong> {b.objetivos}</p>}
+                {isMaestro && (
+                  <div className="flex gap-2 mt-1">
+                    <button onClick={() => setBibModal({ mode: "edit", item: b })} className="ev-btn text-[12px] px-2.5 py-1" style={{ border: `1px solid ${T.border}` }}>
+                      <Pencil size={12} /> Editar
+                    </button>
+                    <button onClick={() => deleteBiblioteca(b.id)} className="ev-btn text-[12px] px-2.5 py-1" style={{ background: T.dangerSoft, color: T.danger }}>
+                      <Trash2 size={12} /> Eliminar
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))}
+            {biblioteca.length === 0 && (
+              <p className="text-[12.5px] col-span-full text-center py-8" style={{ color: T.muted }}>Todavía no hay plantillas registradas.</p>
+            )}
+          </div>
+        </>
+      )}
+
+      {tab === "semanales" && <PlantillasSemanales ctx={ctx} />}
+    </div>
+  );
+}
+
+function PlantillasSemanales({ ctx }) {
+  const { plantillas, plantillaItems, isMaestro, setPlantillaModal, eliminarPlantilla, setPlantillaEditorId, plantillaEditorId, setAplicarPlantillaModal } = ctx;
+
+  if (plantillaEditorId) {
+    const plantilla = plantillas.find((p) => p.id === plantillaEditorId);
+    if (plantilla) return <PlantillaSemanalEditor ctx={ctx} plantilla={plantilla} />;
+    setPlantillaEditorId(null);
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
         <div>
-          <h3 className="ev-display font-semibold text-[16px]">Biblioteca de actividades</h3>
-          <p className="text-[12.5px]" style={{ color: T.muted }}>Plantillas con metodología y objetivos, listas para reutilizar al programar.</p>
+          <h3 className="ev-display font-semibold text-[16px]">Plantillas semanales</h3>
+          <p className="text-[12.5px]" style={{ color: T.muted }}>Arma una semana tipo con las actividades que se repiten, y úsala como base cada vez que programes — solo cambias quién queda a cargo.</p>
         </div>
         {isMaestro && (
-          <button onClick={() => setBibModal({ mode: "new", item: null })} className="ev-btn px-3.5 py-2 text-[12.5px] text-white" style={{ background: T.primary }}>
-            <Plus size={14} /> Nueva plantilla
+          <button onClick={() => setPlantillaModal(true)} className="ev-btn px-3.5 py-2 text-[12.5px] text-white shrink-0" style={{ background: T.primary }}>
+            <Plus size={14} /> Nueva plantilla semanal
           </button>
         )}
       </div>
       <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        {biblioteca.map((b) => (
-          <div key={b.id} className="ev-card p-4 flex flex-col gap-2">
-            <span className="self-start px-2 py-0.5 rounded-full text-[11px] font-semibold" style={{ background: `${ACTIVITY_TYPES[b.tipo].color}1A`, color: ACTIVITY_TYPES[b.tipo].color }}>
-              {ACTIVITY_TYPES[b.tipo].label}
-            </span>
-            <h4 className="font-semibold text-[14px]">{b.nombre}</h4>
-            {b.metodologia && <p className="text-[12px] line-clamp-3" style={{ color: T.muted }}><strong>Metodología:</strong> {b.metodologia}</p>}
-            {b.objetivos && <p className="text-[12px] line-clamp-2" style={{ color: T.muted }}><strong>Objetivos:</strong> {b.objetivos}</p>}
-            {isMaestro && (
-              <div className="flex gap-2 mt-1">
-                <button onClick={() => setBibModal({ mode: "edit", item: b })} className="ev-btn text-[12px] px-2.5 py-1" style={{ border: `1px solid ${T.border}` }}>
-                  <Pencil size={12} /> Editar
+        {plantillas.map((p) => {
+          const itemCount = plantillaItems.filter((it) => it.plantillaId === p.id).length;
+          return (
+            <div key={p.id} className="ev-card p-4 flex flex-col gap-2">
+              <h4 className="font-semibold text-[14px]">{p.nombre}</h4>
+              <p className="text-[12px]" style={{ color: T.muted }}>{itemCount} actividad(es) configurada(s)</p>
+              <div className="flex gap-2 mt-1 flex-wrap">
+                <button onClick={() => setPlantillaEditorId(p.id)} className="ev-btn text-[12px] px-2.5 py-1" style={{ border: `1px solid ${T.border}` }}>
+                  <Pencil size={12} /> {isMaestro ? "Editar" : "Ver"}
                 </button>
-                <button onClick={() => deleteBiblioteca(b.id)} className="ev-btn text-[12px] px-2.5 py-1" style={{ background: T.dangerSoft, color: T.danger }}>
-                  <Trash2 size={12} /> Eliminar
-                </button>
+                {isMaestro && (
+                  <>
+                    <button onClick={() => setAplicarPlantillaModal({ plantillaId: p.id })} disabled={itemCount === 0} className="ev-btn text-[12px] px-2.5 py-1 text-white disabled:opacity-40" style={{ background: T.primary }}>
+                      <CalendarDays size={12} /> Aplicar a una semana
+                    </button>
+                    <button onClick={() => eliminarPlantilla(p.id)} className="ev-btn text-[12px] px-2.5 py-1" style={{ background: T.dangerSoft, color: T.danger }}>
+                      <Trash2 size={12} />
+                    </button>
+                  </>
+                )}
               </div>
-            )}
-          </div>
-        ))}
-        {biblioteca.length === 0 && (
-          <p className="text-[12.5px] col-span-full text-center py-8" style={{ color: T.muted }}>Todavía no hay plantillas registradas.</p>
+            </div>
+          );
+        })}
+        {plantillas.length === 0 && (
+          <p className="text-[12.5px] col-span-full text-center py-8" style={{ color: T.muted }}>Todavía no hay plantillas semanales.</p>
         )}
+      </div>
+    </div>
+  );
+}
+
+function PlantillaSemanalEditor({ ctx, plantilla }) {
+  const { plantillaItems, isMaestro, setPlantillaEditorId, agregarPlantillaItem, eliminarPlantillaItem, biblioteca } = ctx;
+  const [formAbierto, setFormAbierto] = useState(null); // diaSemana del día donde se está agregando
+  const items = plantillaItems.filter((it) => it.plantillaId === plantilla.id);
+
+  return (
+    <div className="flex flex-col gap-4">
+      <button onClick={() => setPlantillaEditorId(null)} className="ev-btn self-start px-3 py-1.5 text-[12.5px]" style={{ border: `1px solid ${T.border}` }}>
+        <ChevronLeft size={14} /> Volver a plantillas semanales
+      </button>
+      <h3 className="ev-display font-semibold text-[16px]">{plantilla.nombre}</h3>
+      <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-4">
+        {DIA_LABEL_LARGO.map((diaNombre, diaIdx) => {
+          const itemsDia = items.filter((it) => it.diaSemana === diaIdx).sort((a, b) => a.horaInicio - b.horaInicio);
+          return (
+            <div key={diaIdx} className="ev-card p-3 flex flex-col gap-2">
+              <p className="ev-display font-semibold text-[13px] capitalize">{diaNombre}</p>
+              {itemsDia.map((it) => (
+                <div key={it.id} className="rounded-lg px-2.5 py-2" style={{ background: `${ACTIVITY_TYPES[it.tipo].color}14`, borderLeft: `3px solid ${ACTIVITY_TYPES[it.tipo].color}` }}>
+                  <div className="flex items-start justify-between gap-1">
+                    <p className="text-[12.5px] font-semibold">{it.nombre}</p>
+                    {isMaestro && (
+                      <button onClick={() => eliminarPlantillaItem(it.id)} className="shrink-0" style={{ color: T.danger }}><X size={13} /></button>
+                    )}
+                  </div>
+                  <p className="ev-mono text-[11px]" style={{ color: T.muted }}>{fmtRange(it.horaInicio, it.horaFin)}</p>
+                </div>
+              ))}
+              {itemsDia.length === 0 && <p className="text-[11.5px]" style={{ color: T.muted }}>Sin actividades</p>}
+              {isMaestro && (
+                formAbierto === diaIdx ? (
+                  <PlantillaItemForm
+                    ctx={ctx}
+                    plantillaId={plantilla.id}
+                    diaSemana={diaIdx}
+                    biblioteca={biblioteca}
+                    onClose={() => setFormAbierto(null)}
+                  />
+                ) : (
+                  <button onClick={() => setFormAbierto(diaIdx)} className="text-[11.5px] font-semibold text-left mt-1" style={{ color: T.primary }}>
+                    <Plus size={11} className="inline -mt-0.5" /> Agregar actividad
+                  </button>
+                )
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function PlantillaItemForm({ ctx, plantillaId, diaSemana, biblioteca, onClose }) {
+  const { agregarPlantillaItem, saving } = ctx;
+  const [form, setForm] = useState({ nombre: "", tipo: ACTIVIDAD_TYPES[0], horaInicio: 8, horaFin: 9, metodologia: "", objetivos: "" });
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+
+  function usarBiblioteca(id) {
+    const item = biblioteca.find((b) => b.id === id);
+    if (!item) return;
+    setForm((f) => ({ ...f, nombre: item.nombre, tipo: item.tipo, metodologia: item.metodologia, objetivos: item.objetivos }));
+  }
+
+  return (
+    <div className="rounded-lg p-2 flex flex-col gap-2 mt-1" style={{ border: `1px solid ${T.border}` }}>
+      {biblioteca.length > 0 && (
+        <select onChange={(e) => e.target.value && usarBiblioteca(e.target.value)} defaultValue="" style={{ ...inputStyle, fontSize: 12 }}>
+          <option value="">— De la biblioteca —</option>
+          {biblioteca.map((b) => <option key={b.id} value={b.id}>{b.nombre}</option>)}
+        </select>
+      )}
+      <input value={form.nombre} onChange={(e) => set("nombre", e.target.value)} placeholder="Nombre de la actividad" style={{ ...inputStyle, fontSize: 12 }} />
+      <select value={form.tipo} onChange={(e) => set("tipo", e.target.value)} style={{ ...inputStyle, fontSize: 12 }}>
+        {ACTIVIDAD_TYPES.map((k) => <option key={k} value={k}>{ACTIVITY_TYPES[k].label}</option>)}
+      </select>
+      <div className="grid grid-cols-2 gap-1.5">
+        <input type="time" step={300} value={horaATimeValue(form.horaInicio)} onChange={(e) => e.target.value && set("horaInicio", timeValueAHora(e.target.value))} style={{ ...inputStyle, fontSize: 12 }} />
+        <input type="time" step={300} value={horaATimeValue(form.horaFin)} onChange={(e) => e.target.value && set("horaFin", timeValueAHora(e.target.value))} style={{ ...inputStyle, fontSize: 12 }} />
+      </div>
+      <div className="flex justify-end gap-1.5">
+        <button onClick={onClose} className="ev-btn text-[11.5px] px-2.5 py-1" style={{ border: `1px solid ${T.border}` }}>Cancelar</button>
+        <button
+          onClick={() => agregarPlantillaItem({ ...form, plantillaId, diaSemana }).then(onClose)}
+          disabled={!form.nombre || saving}
+          className="ev-btn text-[11.5px] px-2.5 py-1 text-white disabled:opacity-40"
+          style={{ background: T.primary }}
+        >
+          Agregar
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function NuevaPlantillaModal({ ctx, onClose }) {
+  const { crearPlantilla, saving } = ctx;
+  const [nombre, setNombre] = useState("");
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="ev-card w-full max-w-sm p-5">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="ev-display font-semibold text-[16px]">Nueva plantilla semanal</h3>
+          <button onClick={onClose}><X size={18} /></button>
+        </div>
+        <Field label="Nombre">
+          <input value={nombre} onChange={(e) => setNombre(e.target.value)} placeholder="Ej. Plantilla Uno" style={inputStyle} />
+        </Field>
+        <div className="flex justify-end gap-2 mt-5">
+          <button onClick={onClose} className="ev-btn px-4 py-2 text-[13px]" style={{ border: `1px solid ${T.border}` }}>Cancelar</button>
+          <button onClick={() => crearPlantilla(nombre)} disabled={!nombre || saving} className="ev-btn px-4 py-2 text-[13px] text-white disabled:opacity-40" style={{ background: T.primary }}>
+            {saving ? "Creando…" : "Crear y editar"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AplicarPlantillaModal({ ctx, onClose }) {
+  const { aplicarPlantillaModal, aplicarPlantilla, plantillaItems, saving } = ctx;
+  const items = plantillaItems.filter((it) => it.plantillaId === aplicarPlantillaModal.plantillaId);
+  const [semanaISO, setSemanaISO] = useState(toISO(getMonday(TODAY)));
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="ev-card w-full max-w-sm p-5">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="ev-display font-semibold text-[16px]">Aplicar plantilla a una semana</h3>
+          <button onClick={onClose}><X size={18} /></button>
+        </div>
+        <Field label="Semana de inicio (lunes)">
+          <input type="date" value={semanaISO} onChange={(e) => setSemanaISO(toISO(getMonday(new Date(`${e.target.value}T00:00:00`))))} style={inputStyle} />
+        </Field>
+        <p className="text-[12px] mt-3" style={{ color: T.muted }}>
+          Esto va a crear <strong style={{ color: T.ink }}>{items.length}</strong> actividad(es) nueva(s) para esa semana, todas sin responsable asignado — las editas después para poner quién queda a cargo.
+        </p>
+        <div className="flex justify-end gap-2 mt-5">
+          <button onClick={onClose} className="ev-btn px-4 py-2 text-[13px]" style={{ border: `1px solid ${T.border}` }}>Cancelar</button>
+          <button
+            onClick={() => aplicarPlantilla(aplicarPlantillaModal.plantillaId, semanaISO)}
+            disabled={saving || items.length === 0}
+            className="ev-btn px-4 py-2 text-[13px] text-white disabled:opacity-40"
+            style={{ background: T.primary }}
+          >
+            {saving ? "Aplicando…" : "Aplicar"}
+          </button>
+        </div>
       </div>
     </div>
   );
