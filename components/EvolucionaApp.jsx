@@ -1235,7 +1235,7 @@ function Dashboard({ ctx }) {
                 <div className="text-right shrink-0">
                   <p className="ev-mono text-[12.5px] font-medium">{fmtRange(e.start, e.end)}</p>
                   <p className="text-[11px]" style={{ color: T.muted }}>
-                    {e.date === todayISO ? "Hoy" : new Date(e.date).toLocaleDateString("es-CO", { weekday: "short", day: "numeric" })}
+                    {e.date === todayISO ? "Hoy" : new Date(`${e.date}T00:00:00`).toLocaleDateString("es-CO", { weekday: "short", day: "numeric" })}
                   </p>
                 </div>
               </div>
@@ -2842,7 +2842,7 @@ function DetailDrawer({ ctx, event, onClose, onEdit, onDelete }) {
         </div>
         <h3 className="ev-display text-[19px] font-semibold mb-1">{event.title}</h3>
         <p className="ev-mono text-[14px] mb-6" style={{ color: T.muted }}>
-          {new Date(event.date).toLocaleDateString("es-CO", { weekday: "long", day: "numeric", month: "long" })} · {fmtRange(event.start, event.end)}
+          {new Date(`${event.date}T00:00:00`).toLocaleDateString("es-CO", { weekday: "long", day: "numeric", month: "long" })} · {fmtRange(event.start, event.end)}
         </p>
         <div className="flex flex-col gap-4">
           <DetailRow label="Responsable" value={p?.nombre || "Sin asignar"} />
