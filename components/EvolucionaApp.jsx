@@ -25,6 +25,7 @@ import {
   UserX,
   Sun,
   Moon,
+  Copy,
 } from "lucide-react";
 import {
   BarChart,
@@ -131,8 +132,25 @@ const ACTIVITY_TYPES = {
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://zvyuqbrvixpnggynrqfa.supabase.co";
 const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_KEY || "sb_publishable_G53F0OOT0-BzQlnXmen2XA_uZ1Yn9A9";
 let ACCESS_TOKEN = null; // token de sesión de Supabase Auth; null = sin iniciar sesión
+let REFRESH_TOKEN = null; // se usa para renovar ACCESS_TOKEN sin pedir contraseña de nuevo
+let onSesionExpirada = () => {}; // la app raíz la reemplaza para cerrar sesión si el refresh también falla
+let refrescoEnCurso = null; // evita refrescar varias veces en paralelo
 
-async function sb(path, options = {}) {
+async function refrescarSesion() {
+  if (!REFRESH_TOKEN) throw new Error("Sin token de refresco");
+  if (!refrescoEnCurso) {
+    refrescoEnCurso = authRequest("token?grant_type=refresh_token", { refresh_token: REFRESH_TOKEN })
+      .then((data) => {
+        ACCESS_TOKEN = data.access_token;
+        REFRESH_TOKEN = data.refresh_token;
+        return data;
+      })
+      .finally(() => { refrescoEnCurso = null; });
+  }
+  return refrescoEnCurso;
+}
+
+async function sb(path, options = {}, _reintentado = false) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     method: options.method || "GET",
     body: options.body,
@@ -145,6 +163,16 @@ async function sb(path, options = {}) {
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
+    const esTokenVencido = res.status === 401 && /JWT expired|invalid JWT|PGRST303/i.test(text);
+    if (esTokenVencido && !_reintentado) {
+      try {
+        await refrescarSesion();
+        return sb(path, options, true); // reintenta una sola vez con el token renovado
+      } catch (_) {
+        onSesionExpirada();
+        throw new Error("Tu sesión expiró. Vuelve a iniciar sesión.");
+      }
+    }
     throw new Error(`Supabase (${path}) respondió ${res.status}: ${text.slice(0, 180)}`);
   }
   const txt = await res.text();
@@ -574,8 +602,30 @@ export default function EvolucionaApp() {
   }
   React.useEffect(() => { if (session) loadAll(); }, [session]);
 
+  // Si el refresco del token llega a fallar (ej. la sesión fue revocada),
+  // cerramos sesión localmente para que la persona vuelva a entrar.
+  React.useEffect(() => {
+    onSesionExpirada = () => {
+      ACCESS_TOKEN = null;
+      REFRESH_TOKEN = null;
+      setSession(null);
+      showToast("Tu sesión expiró, vuelve a iniciar sesión", "warn");
+    };
+    return () => { onSesionExpirada = () => {}; };
+  }, []);
+
+  // Renueva el token de acceso cada 45 minutos mientras haya sesión activa,
+  // para que nunca llegue a vencerse en medio de un guardado (por defecto
+  // Supabase los vence cada hora).
+  React.useEffect(() => {
+    if (!session) return;
+    const id = setInterval(() => { refrescarSesion().catch(() => {}); }, 45 * 60 * 1000);
+    return () => clearInterval(id);
+  }, [session]);
+
   function handleLogout() {
     ACCESS_TOKEN = null;
+    REFRESH_TOKEN = null;
     setSession(null);
     setEvents([]);
     setPersonal([]);
@@ -1036,6 +1086,7 @@ function LoginScreen({ onLogin, theme, setTheme }) {
         const res = await authSignUp(form.correo, form.password);
         if (res.access_token) {
           ACCESS_TOKEN = res.access_token;
+          REFRESH_TOKEN = res.refresh_token;
           try {
             await sb("usuarios", {
               method: "POST",
@@ -1051,6 +1102,7 @@ function LoginScreen({ onLogin, theme, setTheme }) {
       } else {
         const res = await authSignIn(form.correo, form.password);
         ACCESS_TOKEN = res.access_token;
+        REFRESH_TOKEN = res.refresh_token;
         let propio = await fetchOwnUsuario();
         if (!propio) {
           // Pasa cuando el registro exigió confirmar el correo: la fila en
@@ -3217,9 +3269,28 @@ function PlantillasSemanales({ ctx }) {
 }
 
 function PlantillaSemanalEditor({ ctx, plantilla }) {
-  const { plantillaItems, isMaestro, setPlantillaEditorId, agregarPlantillaItem, eliminarPlantillaItem, biblioteca } = ctx;
+  const { plantillaItems, isMaestro, setPlantillaEditorId, agregarPlantillaItem, eliminarPlantillaItem, biblioteca, showToast } = ctx;
   const [formAbierto, setFormAbierto] = useState(null); // diaSemana del día donde se está agregando
+  const [duplicando, setDuplicando] = useState(null); // diaSemana que se está duplicando, para deshabilitar el botón mientras corre
   const items = plantillaItems.filter((it) => it.plantillaId === plantilla.id);
+
+  async function duplicarDiaAnterior(diaIdx) {
+    const itemsAnterior = items.filter((it) => it.diaSemana === diaIdx - 1);
+    if (itemsAnterior.length === 0) return;
+    setDuplicando(diaIdx);
+    try {
+      for (const it of itemsAnterior) {
+        await agregarPlantillaItem({
+          plantillaId: plantilla.id, diaSemana: diaIdx, nombre: it.nombre, tipo: it.tipo,
+          horaInicio: it.horaInicio, horaFin: it.horaFin, responsableId: it.responsableId,
+          metodologia: it.metodologia, objetivos: it.objetivos,
+        });
+      }
+      showToast(`${itemsAnterior.length} actividad(es) copiada(s) de ${DIA_LABEL_LARGO[diaIdx - 1]}`);
+    } finally {
+      setDuplicando(null);
+    }
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -3230,9 +3301,23 @@ function PlantillaSemanalEditor({ ctx, plantilla }) {
       <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-4">
         {DIA_LABEL_LARGO.map((diaNombre, diaIdx) => {
           const itemsDia = items.filter((it) => it.diaSemana === diaIdx).sort((a, b) => a.horaInicio - b.horaInicio);
+          const itemsDiaAnterior = diaIdx > 0 ? items.filter((it) => it.diaSemana === diaIdx - 1) : [];
           return (
             <div key={diaIdx} className="ev-card p-3 flex flex-col gap-2">
-              <p className="ev-display font-semibold text-[13px] capitalize">{diaNombre}</p>
+              <div className="flex items-center justify-between gap-2">
+                <p className="ev-display font-semibold text-[13px] capitalize">{diaNombre}</p>
+                {isMaestro && diaIdx > 0 && itemsDiaAnterior.length > 0 && (
+                  <button
+                    onClick={() => duplicarDiaAnterior(diaIdx)}
+                    disabled={duplicando === diaIdx}
+                    title={`Copiar las actividades de ${DIA_LABEL_LARGO[diaIdx - 1]}`}
+                    className="ev-btn text-[10.5px] px-1.5 py-1 shrink-0 disabled:opacity-50"
+                    style={{ border: `1px solid ${T.border}`, color: T.muted }}
+                  >
+                    <Copy size={11} /> {duplicando === diaIdx ? "Copiando…" : "Duplicar anterior"}
+                  </button>
+                )}
+              </div>
               {itemsDia.map((it) => (
                 <div key={it.id} className="rounded-lg px-2.5 py-2" style={{ background: `${ACTIVITY_TYPES[it.tipo].color}14`, borderLeft: `3px solid ${ACTIVITY_TYPES[it.tipo].color}` }}>
                   <div className="flex items-start justify-between gap-1">
