@@ -1705,7 +1705,7 @@ function sugerirReemplazo({ turno, personal, eventosExistentes, reglas, novedade
 }
 
 function TurnosMesGrid({ ctx, filtroPersonalId }) {
-  const { isMaestro, events, monthOffset, setMonthOffset, setDetail, reglas, festivos, eliminarTurnosDeFechas } = ctx;
+  const { isMaestro, events, monthOffset, setMonthOffset, setDetail, reglas, festivos, eliminarTurnosDeFechas, novedades } = ctx;
   const turnos = events.filter((e) => TURNO_TYPES.includes(e.type) && (!filtroPersonalId || e.personalId === filtroPersonalId));
   const festivoSet = new Set((festivos || []).map((f) => f.fecha));
   const base = new Date(TODAY.getFullYear(), TODAY.getMonth() + monthOffset, 1);
@@ -1719,6 +1719,18 @@ function TurnosMesGrid({ ctx, filtroPersonalId }) {
 
   function chipsFor(dISO, tipo) {
     return turnos.filter((t) => t.date === dISO && t.type === tipo);
+  }
+  // Novedades a resaltar en la casilla del día: incapacidad/permiso/etc.,
+  // capacitación programada ese día, y turnos con más gente de la mínima
+  // requerida ("turno extra"). Solo se muestra si aplica alguna.
+  function novedadesDelDia(dISO, dia, noche) {
+    const NOMBRES_NOVEDAD = { incapacidad: "Incapacidad", permiso: "Permiso", vacaciones: "Vacaciones", otro: "Novedad" };
+    const ausencias = (novedades || []).filter((n) => dISO >= n.fechaInicio && dISO <= n.fechaFin);
+    const capacitaciones = events.filter((e) => e.type === "capacitacion" && e.date === dISO);
+    const minDia = minRequeridoTurno(dISO, "turno_dia", reglas, festivoSet);
+    const minNoche = minRequeridoTurno(dISO, "turno_noche", reglas, festivoSet);
+    const extra = Math.max(0, dia.length - minDia) + Math.max(0, noche.length - minNoche);
+    return { ausencias, capacitaciones, extra, NOMBRES_NOVEDAD };
   }
   function borrarDia(dISO) {
     if (window.confirm(`¿Borrar todos los turnos del ${new Date(`${dISO}T00:00:00`).toLocaleDateString("es-CO", { day: "numeric", month: "long" })}?`)) {
@@ -1764,6 +1776,8 @@ function TurnosMesGrid({ ctx, filtroPersonalId }) {
                 const noche = chipsFor(dISO, "turno_noche");
                 const festivoNombre = festivoSet.has(dISO) ? festivos.find((f) => f.fecha === dISO)?.nombre : null;
                 const hayTurnos = dia.length > 0 || noche.length > 0;
+                const { ausencias, capacitaciones, extra, NOMBRES_NOVEDAD } = novedadesDelDia(dISO, dia, noche);
+                const hayNovedad = ausencias.length > 0 || capacitaciones.length > 0 || extra > 0;
                 return (
                   <div
                     key={i}
@@ -1782,6 +1796,39 @@ function TurnosMesGrid({ ctx, filtroPersonalId }) {
                         </button>
                       )}
                     </div>
+                    {hayNovedad && (
+                      <div className="flex items-center gap-1 flex-wrap" onClick={(ev) => ev.stopPropagation()}>
+                        {ausencias.map((n) => (
+                          <span
+                            key={n.id}
+                            title={`${personName(n.personalId)} · ${NOMBRES_NOVEDAD[n.tipo] || "Novedad"}`}
+                            className="flex items-center gap-0.5 px-1 py-0.5 rounded text-[9px] font-medium"
+                            style={{ background: T.dangerSoft, color: T.danger }}
+                          >
+                            <UserX size={9} /> {NOMBRES_NOVEDAD[n.tipo] || "Novedad"}
+                          </span>
+                        ))}
+                        {capacitaciones.map((c) => (
+                          <span
+                            key={c.id}
+                            title={`Capacitación: ${c.title}${c.personalId ? " · " + personName(c.personalId) : ""}`}
+                            className="flex items-center gap-0.5 px-1 py-0.5 rounded text-[9px] font-medium"
+                            style={{ background: T.primarySoft, color: T.primaryDark }}
+                          >
+                            <BookOpen size={9} /> Capacitación
+                          </span>
+                        ))}
+                        {extra > 0 && (
+                          <span
+                            title={`${extra} persona(s) más de la mínima requerida`}
+                            className="flex items-center gap-0.5 px-1 py-0.5 rounded text-[9px] font-medium"
+                            style={{ background: T.accentSoft, color: T.accentInk }}
+                          >
+                            <Plus size={9} /> Turno extra
+                          </span>
+                        )}
+                      </div>
+                    )}
                     <TurnoMiniBox tipo="turno_dia" chips={dia} onChipClick={setDetail} min={filtroPersonalId ? undefined : minRequeridoTurno(dISO, "turno_dia", reglas, festivoSet)} reglas={filtroPersonalId ? null : reglas} />
                     <TurnoMiniBox tipo="turno_noche" chips={noche} onChipClick={setDetail} min={filtroPersonalId ? undefined : minRequeridoTurno(dISO, "turno_noche", reglas, festivoSet)} reglas={filtroPersonalId ? null : reglas} />
                   </div>
