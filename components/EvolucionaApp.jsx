@@ -1551,6 +1551,10 @@ function generarPropuestaTurnos({ personal, eventosExistentes, reglas, festivos,
 
   for (let semanaIdx = 0; semanaIdx < semanas; semanaIdx++) {
     const diasSemana = dias.slice(semanaIdx * 7, semanaIdx * 7 + 7);
+    // Rota el orden del personal cada semana para que, en caso de empate en
+    // horas/turnos, no siempre gane la misma persona por estar primera en la lista.
+    const offsetRotacion = elegibles.length ? semanaIdx % elegibles.length : 0;
+    const elegiblesSemana = [...elegibles.slice(offsetRotacion), ...elegibles.slice(0, offsetRotacion)];
     // Contadores por persona, reiniciados cada semana (el objetivo es semanal)
     const conteo = {};
     elegibles.forEach((p) => { conteo[p.id] = { turno_dia: 0, turno_noche: 0, horas: 0 }; });
@@ -1575,7 +1579,7 @@ function generarPropuestaTurnos({ personal, eventosExistentes, reglas, festivos,
       // han tenido su fin de semana libre este mes.
       if (diaIdx === 5 && (reglas.finesSemanaLibresMes || 0) > 0) {
         const mesKey = `${d.getFullYear()}-${d.getMonth()}`;
-        const candidatosDescanso = elegibles.filter((p) => !descansoAsignadoMes[`${p.id}|${mesKey}`]);
+        const candidatosDescanso = elegiblesSemana.filter((p) => !descansoAsignadoMes[`${p.id}|${mesKey}`]);
         if (candidatosDescanso.length > 0) {
           candidatosDescanso.sort((a, b) => (conteo[b.id]?.horas || 0) - (conteo[a.id]?.horas || 0));
           const elegido = candidatosDescanso[0];
@@ -1596,6 +1600,10 @@ function generarPropuestaTurnos({ personal, eventosExistentes, reglas, festivos,
         (reglasPersonal || []).filter((r) => r.diaSemana === nuestroDia && r.tipoTurno === tipo && r.tipoRegla === "siempre").forEach((r) => {
           const persona = elegibles.find((p) => p.id === r.personalId);
           if (!persona || asignadoHoy[dISO]?.has(persona.id)) return;
+          if (descansoFinDeSemana[dISO] === persona.id) {
+            faltantes.push({ date: dISO, type: tipo, faltan: 0, motivo: `regla fija de ${persona.nombre} no aplicada (le tocó su descanso de fin de semana este mes)` });
+            return;
+          }
           if (estaAusente(persona.id, dISO, novedades)) {
             faltantes.push({ date: dISO, type: tipo, faltan: 0, motivo: `regla fija de ${persona.nombre} no aplicada (tiene una novedad activa)` });
             return;
@@ -1614,7 +1622,7 @@ function generarPropuestaTurnos({ personal, eventosExistentes, reglas, festivos,
           (reglasPersonal || []).filter((r) => r.diaSemana === nuestroDia && r.tipoTurno === tipo && r.tipoRegla === "nunca").map((r) => r.personalId)
         );
 
-        const candidatos = elegibles
+        const candidatos = elegiblesSemana
           .filter((p) => !fijos.some((f) => f.id === p.id))
           .filter((p) => !excluidosPorRegla.has(p.id)) // regla "nunca" para este día/turno
           .filter((p) => descansoFinDeSemana[dISO] !== p.id) // le tocó su descanso de fin de semana este mes
