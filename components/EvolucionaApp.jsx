@@ -26,6 +26,7 @@ import {
   Sun,
   Moon,
   Copy,
+  Megaphone,
 } from "lucide-react";
 import {
   BarChart,
@@ -223,7 +224,7 @@ function mapUsuario(row) {
 }
 
 async function fetchAllRemote() {
-  const [personalRows, actRows, turnRows, bibRows, reglasRow, festivoRows, novedadRows, reglaPersonalRows, plantillaRows, plantillaItemRows] = await Promise.all([
+  const [personalRows, actRows, turnRows, bibRows, reglasRow, festivoRows, novedadRows, reglaPersonalRows, plantillaRows, plantillaItemRows, avisoRows] = await Promise.all([
     sb("personal?select=*&order=nombre"),
     sb("actividades?select=*"),
     sb("turnos?select=*"),
@@ -234,6 +235,7 @@ async function fetchAllRemote() {
     sb("reglas_personal?select=*"),
     sb("plantillas_semanales?select=*&order=nombre"),
     sb("plantilla_actividades?select=*"),
+    sb("avisos_tablero?select=*&order=created_at.desc"),
   ]);
   return {
     personal: personalRows.map(mapPersonal),
@@ -245,6 +247,7 @@ async function fetchAllRemote() {
     reglasPersonal: reglaPersonalRows.map(mapReglaPersonal),
     plantillas: plantillaRows.map(mapPlantilla),
     plantillaItems: plantillaItemRows.map(mapPlantillaItem),
+    avisos: avisoRows.map(mapAviso),
   };
 }
 async function fetchEventsRemote() {
@@ -451,6 +454,24 @@ async function deletePlantillaItemRemote(id) {
   await sb(`plantilla_actividades?id=eq.${id}`, { method: "DELETE", prefer: "return=minimal" });
 }
 
+function mapAviso(row) {
+  return { id: row.id, titulo: row.titulo, mensaje: row.mensaje, nivel: row.nivel, autor: row.autor || "", fechaExpira: row.fecha_expira, createdAt: row.created_at };
+}
+async function fetchAvisos() {
+  const rows = await sb("avisos_tablero?select=*&order=created_at.desc");
+  return rows.map(mapAviso);
+}
+async function insertAvisoRemote(form) {
+  const [row] = await sb("avisos_tablero", {
+    method: "POST",
+    body: JSON.stringify({ titulo: form.titulo, mensaje: form.mensaje, nivel: form.nivel, autor: form.autor || null, fecha_expira: form.fechaExpira || null }),
+  });
+  return mapAviso(row);
+}
+async function deleteAvisoRemote(id) {
+  await sb(`avisos_tablero?id=eq.${id}`, { method: "DELETE", prefer: "return=minimal" });
+}
+
 /* ============================== DATA ============================== */
 const TODAY = (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; })(); // fecha real de hoy
 let PERSONAL_STATE = []; // se llena al cargar desde Supabase; usado por personName/personById
@@ -556,6 +577,8 @@ export default function EvolucionaApp() {
   const [reglasPersonal, setReglasPersonal] = useState([]);
   const [plantillas, setPlantillas] = useState([]);
   const [plantillaItems, setPlantillaItems] = useState([]);
+  const [avisos, setAvisos] = useState([]);
+  const [avisoModal, setAvisoModal] = useState(false);
   const [plantillaModal, setPlantillaModal] = useState(false); // modal para crear una nueva plantilla
   const [plantillaEditorId, setPlantillaEditorId] = useState(null); // id de la plantilla que se está editando
   const [aplicarPlantillaModal, setAplicarPlantillaModal] = useState(null); // {plantillaId}
@@ -594,6 +617,7 @@ export default function EvolucionaApp() {
       setReglasPersonal(data.reglasPersonal);
       setPlantillas(data.plantillas);
       setPlantillaItems(data.plantillaItems);
+      setAvisos(data.avisos);
     } catch (err) {
       setLoadError(err.message || "No se pudo conectar a Supabase.");
     } finally {
@@ -888,6 +912,28 @@ export default function EvolucionaApp() {
       setSaving(false);
     }
   }
+  async function crearAviso(form) {
+    setSaving(true);
+    try {
+      const saved = await insertAvisoRemote({ ...form, autor: session?.email || "" });
+      setAvisos((prev) => [saved, ...prev]);
+      setAvisoModal(false);
+      showToast("Aviso publicado");
+    } catch (err) {
+      showToast(`No se pudo publicar: ${err.message}`, "warn");
+    } finally {
+      setSaving(false);
+    }
+  }
+  async function eliminarAviso(id) {
+    try {
+      await deleteAvisoRemote(id);
+      setAvisos((prev) => prev.filter((a) => a.id !== id));
+      showToast("Aviso eliminado", "warn");
+    } catch (err) {
+      showToast(`No se pudo eliminar: ${err.message}`, "warn");
+    }
+  }
   async function reemplazarTurno(turno, nuevoPersonalId) {
     setSaving(true);
     try {
@@ -914,6 +960,7 @@ export default function EvolucionaApp() {
     plantillas, plantillaItems, plantillaModal, setPlantillaModal, plantillaEditorId, setPlantillaEditorId,
     crearPlantilla, eliminarPlantilla, agregarPlantillaItem, eliminarPlantillaItem,
     aplicarPlantillaModal, setAplicarPlantillaModal, aplicarPlantilla,
+    avisos, avisoModal, setAvisoModal, crearAviso, eliminarAviso,
     reglaPersonalModal, setReglaPersonalModal,
     reemplazarTurno,
   };
@@ -1061,6 +1108,7 @@ export default function EvolucionaApp() {
       {bibModal && <BibliotecaModal ctx={ctx} onClose={() => setBibModal(null)} initial={bibModal} />}
       {plantillaModal && <NuevaPlantillaModal ctx={ctx} onClose={() => setPlantillaModal(false)} />}
       {aplicarPlantillaModal && <AplicarPlantillaModal ctx={ctx} onClose={() => setAplicarPlantillaModal(null)} />}
+      {avisoModal && <AvisoModal ctx={ctx} onClose={() => setAvisoModal(false)} />}
       {toast && <Toast toast={toast} />}
     </div>
   );
@@ -1235,11 +1283,12 @@ function calcularAlertasDashboard(events, personal, reglas) {
 }
 
 function Dashboard({ ctx }) {
-  const { events, personal, reglas, setView, setModal } = ctx;
+  const { events, personal, reglas, setView, setModal, avisos, isMaestro, setAvisoModal, eliminarAviso } = ctx;
   const todayISO = toISO(TODAY);
   const todayEvents = events.filter((e) => e.date === todayISO).sort((a, b) => a.start - b.start);
   const activos = personal.filter((p) => p.estado === "activo").length;
   const turnosHoy = todayEvents.filter((e) => e.type === "turno_dia" || e.type === "turno_noche").length;
+  const avisosVigentes = avisos.filter((a) => !a.fechaExpira || a.fechaExpira >= todayISO);
 
   const alerts = calcularAlertasDashboard(events, personal, reglas);
 
@@ -1309,6 +1358,39 @@ function Dashboard({ ctx }) {
               <p className="text-[12.5px] text-center py-4" style={{ color: T.muted }}>Sin alertas por ahora.</p>
             )}
           </div>
+        </div>
+      </div>
+
+      <div className="ev-card p-5">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="ev-display font-semibold text-[15px] flex items-center gap-2">
+            <Megaphone size={15} style={{ color: T.primary }} /> Tablero de avisos
+          </h3>
+          {isMaestro && (
+            <button onClick={() => setAvisoModal(true)} className="ev-btn px-3 py-1.5 text-[12px] text-white" style={{ background: T.primary }}>
+              <Plus size={13} /> Nuevo aviso
+            </button>
+          )}
+        </div>
+        <p className="text-[12px] -mt-3 mb-4" style={{ color: T.muted }}>Información puntual para el equipo: novedades de un paciente, avisos generales, etc. Distinto de las alertas automáticas de arriba.</p>
+        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {avisosVigentes.map((a) => (
+            <div key={a.id} className="rounded-lg p-3 flex flex-col gap-1" style={{ background: a.nivel === "importante" ? T.dangerSoft : T.primarySoft }}>
+              <div className="flex items-start justify-between gap-2">
+                <p className="font-semibold text-[13px]" style={{ color: a.nivel === "importante" ? T.danger : T.primaryDark }}>{a.titulo}</p>
+                {isMaestro && (
+                  <button onClick={() => eliminarAviso(a.id)} className="shrink-0" style={{ color: T.muted }}><X size={14} /></button>
+                )}
+              </div>
+              <p className="text-[12.5px] leading-snug" style={{ color: T.ink }}>{a.mensaje}</p>
+              <p className="text-[10.5px] mt-1" style={{ color: T.muted }}>
+                {a.autor ? `${a.autor} · ` : ""}{new Date(a.createdAt).toLocaleDateString("es-CO", { day: "numeric", month: "short" })}
+              </p>
+            </div>
+          ))}
+          {avisosVigentes.length === 0 && (
+            <p className="text-[12.5px] col-span-full text-center py-6" style={{ color: T.muted }}>No hay avisos publicados.</p>
+          )}
         </div>
       </div>
 
@@ -1407,6 +1489,15 @@ function esAuxiliar(cargo, reglas) {
 function estaAusente(personalId, dISO, novedades) {
   return (novedades || []).some((n) => n.personalId === personalId && dISO >= n.fechaInicio && dISO <= n.fechaFin);
 }
+function finesDeSemanaDelMes(anio, mes) {
+  const out = [];
+  const ultimo = new Date(anio, mes + 1, 0).getDate();
+  for (let dia = 1; dia <= ultimo; dia++) {
+    const d = new Date(anio, mes, dia);
+    if (d.getDay() === 6) out.push({ sabado: toISO(d), domingo: toISO(addDays(d, 1)) });
+  }
+  return out;
+}
 
 function generarPropuestaTurnos({ personal, eventosExistentes, reglas, festivos, novedades, reglasPersonal, fechaInicioISO, semanas }) {
   const festivoSet = new Set((festivos || []).map((f) => f.fecha));
@@ -1419,6 +1510,25 @@ function generarPropuestaTurnos({ personal, eventosExistentes, reglas, festivos,
   const faltantes = [];
   const asignadoHoy = {}; // dISO -> Set(personalId)
   const nocheAyer = {}; // dISO -> Set(personalId) que salieron de turno noche esa madrugada
+  const descansoAsignadoMes = {}; // `${personalId}|${mesKey}` -> true si ya tiene garantizado su fin de semana libre ese mes
+  const descansoFinDeSemana = {}; // dISO -> personalId excluido ese día por su descanso mensual
+
+  // Revisa en lo que YA existe en Supabase (de meses/semanas anteriores a esta corrida)
+  // si alguien ya tuvo un fin de semana completo libre este mes, para no exigirle otro.
+  const mesesCubiertos = new Set(dias.map((d) => `${d.getFullYear()}-${d.getMonth()}`));
+  mesesCubiertos.forEach((mesKey) => {
+    const [anio, mes] = mesKey.split("-").map(Number);
+    finesDeSemanaDelMes(anio, mes).forEach(({ sabado, domingo }) => {
+      const seProgramoEseFin = eventosExistentes.some((e) => (e.date === sabado || e.date === domingo) && TURNO_TYPES.includes(e.type) && e.personalId);
+      if (!seProgramoEseFin) return; // fin de semana aún sin programar, no cuenta ni a favor ni en contra
+      elegibles.forEach((p) => {
+        const key = `${p.id}|${mesKey}`;
+        if (descansoAsignadoMes[key]) return;
+        const ocupado = eventosExistentes.some((e) => e.personalId === p.id && (e.date === sabado || e.date === domingo) && TURNO_TYPES.includes(e.type));
+        if (!ocupado) descansoAsignadoMes[key] = true;
+      });
+    });
+  });
 
   for (let semanaIdx = 0; semanaIdx < semanas; semanaIdx++) {
     const diasSemana = dias.slice(semanaIdx * 7, semanaIdx * 7 + 7);
@@ -1439,6 +1549,22 @@ function generarPropuestaTurnos({ personal, eventosExistentes, reglas, festivos,
       const dISO = toISO(d);
       const diaAnteriorISO = diaIdx > 0 ? toISO(diasSemana[diaIdx - 1]) : toISO(addDays(d, -1));
       const nuestroDia = (d.getDay() + 6) % 7; // 0=lunes ... 6=domingo
+
+      // Al llegar al sábado, decide quién se gana el descanso de fin de semana
+      // de este mes (preferencia configurable, no obligatoria): prioriza a
+      // quien más horas lleve acumuladas esta semana entre quienes aún no
+      // han tenido su fin de semana libre este mes.
+      if (diaIdx === 5 && (reglas.finesSemanaLibresMes || 0) > 0) {
+        const mesKey = `${d.getFullYear()}-${d.getMonth()}`;
+        const candidatosDescanso = elegibles.filter((p) => !descansoAsignadoMes[`${p.id}|${mesKey}`]);
+        if (candidatosDescanso.length > 0) {
+          candidatosDescanso.sort((a, b) => (conteo[b.id]?.horas || 0) - (conteo[a.id]?.horas || 0));
+          const elegido = candidatosDescanso[0];
+          descansoAsignadoMes[`${elegido.id}|${mesKey}`] = true;
+          descansoFinDeSemana[dISO] = elegido.id;
+          descansoFinDeSemana[toISO(diasSemana[6])] = elegido.id;
+        }
+      }
       ["turno_dia", "turno_noche"].forEach((tipo) => {
         const yaExiste = eventosExistentes.some((e) => e.date === dISO && e.type === tipo);
         if (yaExiste) return; // no se toca lo que ya está manualmente cubierto
@@ -1472,6 +1598,7 @@ function generarPropuestaTurnos({ personal, eventosExistentes, reglas, festivos,
         const candidatos = elegibles
           .filter((p) => !fijos.some((f) => f.id === p.id))
           .filter((p) => !excluidosPorRegla.has(p.id)) // regla "nunca" para este día/turno
+          .filter((p) => descansoFinDeSemana[dISO] !== p.id) // le tocó su descanso de fin de semana este mes
           .filter((p) => !estaAusente(p.id, dISO, novedades)) // sin novedad activa ese día
           .filter((p) => !(asignadoHoy[dISO]?.has(p.id))) // no dos turnos el mismo día
           .filter((p) => !(tipo === "turno_dia" && nocheAyer[diaAnteriorISO]?.has(p.id))) // descanso tras turno noche
@@ -2669,6 +2796,50 @@ function ReglaPersonalModal({ ctx, onClose }) {
             style={{ background: T.primary }}
           >
             {saving ? "Guardando…" : "Guardar"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AvisoModal({ ctx, onClose }) {
+  const { crearAviso, saving } = ctx;
+  const [form, setForm] = useState({ titulo: "", mensaje: "", nivel: "info", fechaExpira: "" });
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="ev-card w-full max-w-sm p-5">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="ev-display font-semibold text-[16px]">Nuevo aviso</h3>
+          <button onClick={onClose}><X size={18} /></button>
+        </div>
+        <div className="flex flex-col gap-3.5">
+          <Field label="Título">
+            <input value={form.titulo} onChange={(e) => set("titulo", e.target.value)} placeholder="Ej. Paciente en habitación 4" style={inputStyle} />
+          </Field>
+          <Field label="Mensaje">
+            <textarea rows={4} value={form.mensaje} onChange={(e) => set("mensaje", e.target.value)} placeholder="Detalle para el equipo…" style={{ ...inputStyle, resize: "vertical" }} />
+          </Field>
+          <Field label="Nivel">
+            <select value={form.nivel} onChange={(e) => set("nivel", e.target.value)} style={inputStyle}>
+              <option value="info">Informativo</option>
+              <option value="importante">Importante</option>
+            </select>
+          </Field>
+          <Field label="Mostrar hasta (opcional)">
+            <input type="date" value={form.fechaExpira} onChange={(e) => set("fechaExpira", e.target.value)} style={inputStyle} />
+          </Field>
+        </div>
+        <div className="flex justify-end gap-2 mt-5">
+          <button onClick={onClose} className="ev-btn px-4 py-2 text-[13px]" style={{ border: `1px solid ${T.border}` }}>Cancelar</button>
+          <button
+            onClick={() => crearAviso(form)}
+            disabled={!form.titulo || !form.mensaje || saving}
+            className="ev-btn px-4 py-2 text-[13px] text-white disabled:opacity-40"
+            style={{ background: T.primary }}
+          >
+            {saving ? "Publicando…" : "Publicar"}
           </button>
         </div>
       </div>
