@@ -1729,7 +1729,11 @@ function TurnosMesGrid({ ctx, filtroPersonalId }) {
     const capacitaciones = events.filter((e) => e.type === "capacitacion" && e.date === dISO);
     const minDia = minRequeridoTurno(dISO, "turno_dia", reglas, festivoSet);
     const minNoche = minRequeridoTurno(dISO, "turno_noche", reglas, festivoSet);
-    const extra = Math.max(0, dia.length - minDia) + Math.max(0, noche.length - minNoche);
+    const excesoHeadcount = Math.max(0, dia.length - minDia) + Math.max(0, noche.length - minNoche);
+    // "Turno extra" solo cuenta si además hay una ausencia ese día: es decir,
+    // hay más gente de la mínima Y probablemente sea para cubrir a alguien
+    // que no pudo asistir. Si no hay ausencia registrada, no se muestra.
+    const extra = ausencias.length > 0 ? excesoHeadcount : 0;
     return { ausencias, capacitaciones, extra, NOMBRES_NOVEDAD };
   }
   function borrarDia(dISO) {
@@ -1802,29 +1806,29 @@ function TurnosMesGrid({ ctx, filtroPersonalId }) {
                           <span
                             key={n.id}
                             title={`${personName(n.personalId)} · ${NOMBRES_NOVEDAD[n.tipo] || "Novedad"}`}
-                            className="flex items-center gap-0.5 px-1 py-0.5 rounded text-[9px] font-medium"
+                            className="flex items-center gap-0.5 px-1 py-0.5 rounded text-[9px] font-medium max-w-full truncate"
                             style={{ background: T.dangerSoft, color: T.danger }}
                           >
-                            <UserX size={9} /> {NOMBRES_NOVEDAD[n.tipo] || "Novedad"}
+                            <UserX size={9} className="shrink-0" /> <span className="truncate">{NOMBRES_NOVEDAD[n.tipo] || "Novedad"}: {personName(n.personalId)}</span>
                           </span>
                         ))}
                         {capacitaciones.map((c) => (
                           <span
                             key={c.id}
                             title={`Capacitación: ${c.title}${c.personalId ? " · " + personName(c.personalId) : ""}`}
-                            className="flex items-center gap-0.5 px-1 py-0.5 rounded text-[9px] font-medium"
+                            className="flex items-center gap-0.5 px-1 py-0.5 rounded text-[9px] font-medium max-w-full truncate"
                             style={{ background: T.primarySoft, color: T.primaryDark }}
                           >
-                            <BookOpen size={9} /> Capacitación
+                            <BookOpen size={9} className="shrink-0" /> <span className="truncate">Capacitación{c.personalId ? `: ${personName(c.personalId)}` : ""}</span>
                           </span>
                         ))}
                         {extra > 0 && (
                           <span
-                            title={`${extra} persona(s) más de la mínima requerida`}
-                            className="flex items-center gap-0.5 px-1 py-0.5 rounded text-[9px] font-medium"
+                            title={`Cubre la ausencia de ${ausencias.map((a) => personName(a.personalId)).join(", ")}`}
+                            className="flex items-center gap-0.5 px-1 py-0.5 rounded text-[9px] font-medium max-w-full truncate"
                             style={{ background: T.accentSoft, color: T.accentInk }}
                           >
-                            <Plus size={9} /> Turno extra
+                            <Plus size={9} className="shrink-0" /> <span className="truncate">Extra por ausencia de {ausencias.map((a) => personName(a.personalId)).join(", ")}</span>
                           </span>
                         )}
                       </div>
