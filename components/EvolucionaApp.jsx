@@ -695,6 +695,26 @@ export default function EvolucionaApp() {
       showToast(`No se pudo eliminar: ${err.message}`, "warn");
     }
   }
+  async function eliminarTurnosDeFechas(fechasISO) {
+    const aBorrar = events.filter((e) => TURNO_TYPES.includes(e.type) && fechasISO.includes(e.date));
+    if (aBorrar.length === 0) {
+      showToast("No hay turnos en ese rango para borrar", "warn");
+      return;
+    }
+    setSaving(true);
+    try {
+      for (const ev of aBorrar) {
+        await deleteEventRemote(ev);
+      }
+      setEvents((prev) => prev.filter((e) => !(TURNO_TYPES.includes(e.type) && fechasISO.includes(e.date))));
+      showToast(`${aBorrar.length} turno(s) eliminado(s)`, "warn");
+    } catch (err) {
+      showToast(`No se pudo borrar todo: ${err.message}`, "warn");
+      setEvents(await fetchEventsRemote());
+    } finally {
+      setSaving(false);
+    }
+  }
   async function toggleEstado(id) {
     const current = personal.find((p) => p.id === id)?.estado;
     try {
@@ -950,7 +970,7 @@ export default function EvolucionaApp() {
   const ctx = {
     events, setEvents, personal, setPersonal, biblioteca, weekStart, weekDays, weekOffset, setWeekOffset,
     calMode, setCalMode, monthOffset, setMonthOffset, setModal, detail, setDetail, deleteEvent,
-    toggleEstado, showToast, setView, saving, isMaestro, session,
+    toggleEstado, showToast, setView, saving, isMaestro, session, eliminarTurnosDeFechas,
     personalModal, setPersonalModal, savePersonal, deletePersonal,
     bibModal, setBibModal, saveBiblioteca, deleteBiblioteca,
     reglas, saveReglas, festivos, addFestivo, deleteFestivo, festivoModal, setFestivoModal,
@@ -1344,55 +1364,54 @@ function Dashboard({ ctx }) {
           </div>
         </div>
 
-        <div className="ev-card p-5">
-          <h3 className="ev-display font-semibold text-[15px] mb-4 flex items-center gap-2">
-            <AlertTriangle size={15} style={{ color: T.danger }} /> Alertas
-          </h3>
-          <div className="flex flex-col gap-2.5">
-            {alerts.map((a, i) => (
-              <div key={i} className="rounded-lg px-3 py-2.5 text-[12.5px] leading-snug" style={{ background: a.level === "danger" ? T.dangerSoft : T.accentSoft, color: a.level === "danger" ? T.danger : T.accentInk }}>
-                {a.text}
+        <div className="ev-card p-5 flex flex-col">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="ev-display font-semibold text-[15px] flex items-center gap-2">
+              <Megaphone size={15} style={{ color: T.primary }} /> Tablero de avisos
+            </h3>
+            {isMaestro && (
+              <button onClick={() => setAvisoModal(true)} className="shrink-0" style={{ color: T.primary }} title="Nuevo aviso">
+                <Plus size={16} />
+              </button>
+            )}
+          </div>
+          <p className="text-[11.5px] mb-3" style={{ color: T.muted }}>Información puntual para el equipo: novedades de un paciente, avisos generales, etc.</p>
+          <div className="flex flex-col gap-2 overflow-y-auto ev-scroll" style={{ maxHeight: 260 }}>
+            {avisosVigentes.map((a) => (
+              <div key={a.id} className="rounded-lg p-2.5 flex flex-col gap-0.5" style={{ background: a.nivel === "importante" ? T.dangerSoft : T.primarySoft }}>
+                <div className="flex items-start justify-between gap-2">
+                  <p className="font-semibold text-[12.5px]" style={{ color: a.nivel === "importante" ? T.danger : T.primaryDark }}>{a.titulo}</p>
+                  {isMaestro && (
+                    <button onClick={() => eliminarAviso(a.id)} className="shrink-0" style={{ color: T.muted }}><X size={13} /></button>
+                  )}
+                </div>
+                <p className="text-[12px] leading-snug" style={{ color: T.ink }}>{a.mensaje}</p>
+                <p className="text-[10px] mt-0.5" style={{ color: T.muted }}>
+                  {a.autor ? `${a.autor} · ` : ""}{new Date(a.createdAt).toLocaleDateString("es-CO", { day: "numeric", month: "short" })}
+                </p>
               </div>
             ))}
-            {alerts.length === 0 && (
-              <p className="text-[12.5px] text-center py-4" style={{ color: T.muted }}>Sin alertas por ahora.</p>
+            {avisosVigentes.length === 0 && (
+              <p className="text-[12px] text-center py-4" style={{ color: T.muted }}>No hay avisos publicados.</p>
             )}
           </div>
         </div>
       </div>
 
-      <div className="ev-card p-5">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="ev-display font-semibold text-[15px] flex items-center gap-2">
-            <Megaphone size={15} style={{ color: T.primary }} /> Tablero de avisos
-          </h3>
-          {isMaestro && (
-            <button onClick={() => setAvisoModal(true)} className="ev-btn px-3 py-1.5 text-[12px] text-white" style={{ background: T.primary }}>
-              <Plus size={13} /> Nuevo aviso
-            </button>
-          )}
+      {alerts.length > 0 && (
+        <div className="ev-card px-4 py-3">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="flex items-center gap-1.5 text-[12px] font-semibold shrink-0" style={{ color: T.muted }}>
+              <AlertTriangle size={13} style={{ color: T.danger }} /> Alertas:
+            </span>
+            {alerts.map((a, i) => (
+              <span key={i} className="rounded-full px-2.5 py-1 text-[11.5px]" style={{ background: a.level === "danger" ? T.dangerSoft : T.accentSoft, color: a.level === "danger" ? T.danger : T.accentInk }}>
+                {a.text}
+              </span>
+            ))}
+          </div>
         </div>
-        <p className="text-[12px] -mt-3 mb-4" style={{ color: T.muted }}>Información puntual para el equipo: novedades de un paciente, avisos generales, etc. Distinto de las alertas automáticas de arriba.</p>
-        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
-          {avisosVigentes.map((a) => (
-            <div key={a.id} className="rounded-lg p-3 flex flex-col gap-1" style={{ background: a.nivel === "importante" ? T.dangerSoft : T.primarySoft }}>
-              <div className="flex items-start justify-between gap-2">
-                <p className="font-semibold text-[13px]" style={{ color: a.nivel === "importante" ? T.danger : T.primaryDark }}>{a.titulo}</p>
-                {isMaestro && (
-                  <button onClick={() => eliminarAviso(a.id)} className="shrink-0" style={{ color: T.muted }}><X size={14} /></button>
-                )}
-              </div>
-              <p className="text-[12.5px] leading-snug" style={{ color: T.ink }}>{a.mensaje}</p>
-              <p className="text-[10.5px] mt-1" style={{ color: T.muted }}>
-                {a.autor ? `${a.autor} · ` : ""}{new Date(a.createdAt).toLocaleDateString("es-CO", { day: "numeric", month: "short" })}
-              </p>
-            </div>
-          ))}
-          {avisosVigentes.length === 0 && (
-            <p className="text-[12.5px] col-span-full text-center py-6" style={{ color: T.muted }}>No hay avisos publicados.</p>
-          )}
-        </div>
-      </div>
+      )}
 
       <div className="ev-card p-5">
         <h3 className="ev-display font-semibold text-[15px] mb-1">Control de horas · esta semana</h3>
@@ -1678,7 +1697,7 @@ function sugerirReemplazo({ turno, personal, eventosExistentes, reglas, novedade
 }
 
 function TurnosMesGrid({ ctx, filtroPersonalId }) {
-  const { isMaestro, events, monthOffset, setMonthOffset, setDetail, reglas, festivos } = ctx;
+  const { isMaestro, events, monthOffset, setMonthOffset, setDetail, reglas, festivos, eliminarTurnosDeFechas } = ctx;
   const turnos = events.filter((e) => TURNO_TYPES.includes(e.type) && (!filtroPersonalId || e.personalId === filtroPersonalId));
   const festivoSet = new Set((festivos || []).map((f) => f.fecha));
   const base = new Date(TODAY.getFullYear(), TODAY.getMonth() + monthOffset, 1);
@@ -1687,9 +1706,22 @@ function TurnosMesGrid({ ctx, filtroPersonalId }) {
   const todayISO = toISO(TODAY);
   const lastCellInMonth = cells.reduce((acc, d, i) => (d.getMonth() === base.getMonth() ? i : acc), 0);
   const visibleCells = cells.slice(0, Math.ceil((lastCellInMonth + 1) / 7) * 7);
+  const semanas = [];
+  for (let i = 0; i < visibleCells.length; i += 7) semanas.push(visibleCells.slice(i, i + 7));
 
   function chipsFor(dISO, tipo) {
     return turnos.filter((t) => t.date === dISO && t.type === tipo);
+  }
+  function borrarDia(dISO) {
+    if (window.confirm(`¿Borrar todos los turnos del ${new Date(`${dISO}T00:00:00`).toLocaleDateString("es-CO", { day: "numeric", month: "long" })}?`)) {
+      eliminarTurnosDeFechas([dISO]);
+    }
+  }
+  function borrarSemana(semana) {
+    const rango = `${semana[0].toLocaleDateString("es-CO", { day: "numeric", month: "short" })} – ${semana[6].toLocaleDateString("es-CO", { day: "numeric", month: "short" })}`;
+    if (window.confirm(`¿Borrar todos los turnos de la semana del ${rango}? Esta acción no se puede deshacer.`)) {
+      eliminarTurnosDeFechas(semana.map(toISO));
+    }
   }
 
   return (
@@ -1706,29 +1738,50 @@ function TurnosMesGrid({ ctx, filtroPersonalId }) {
       <div className="grid grid-cols-7 text-center py-2 border-b" style={{ borderColor: T.border }}>
         {DIA_LABEL.map((d) => <p key={d} className="text-[11px] font-medium" style={{ color: T.muted }}>{d}</p>)}
       </div>
-      <div className="grid grid-cols-7 overflow-x-auto ev-scroll" style={{ minWidth: 900 }}>
-        {visibleCells.map((d, i) => {
-          const dISO = toISO(d);
-          const inMonth = d.getMonth() === base.getMonth();
-          const dia = chipsFor(dISO, "turno_dia");
-          const noche = chipsFor(dISO, "turno_noche");
-          const festivoNombre = festivoSet.has(dISO) ? festivos.find((f) => f.fecha === dISO)?.nombre : null;
-          return (
-            <div
-              key={i}
-              onClick={() => isMaestro && ctx.setModal({ mode: "new", event: null, defaultType: "turno_dia", prefill: { date: dISO, start: 7, end: 17 } })}
-              className={`border-b border-r p-1.5 flex flex-col gap-1 min-h-[112px] ${isMaestro ? "cursor-pointer hover:bg-black/[0.02]" : ""}`}
-              style={{ borderColor: T.border, opacity: inMonth ? 1 : 0.4, background: festivoNombre ? T.accentSoft : "transparent" }}
-              title={festivoNombre || undefined}
-            >
-              <span className="ev-display text-[12px] font-semibold w-5 h-5 flex items-center justify-center rounded-full shrink-0" style={{ background: dISO === todayISO ? T.primary : "transparent", color: dISO === todayISO ? "#fff" : T.ink }}>
-                {d.getDate()}
-              </span>
-              <TurnoMiniBox tipo="turno_dia" chips={dia} onChipClick={setDetail} min={filtroPersonalId ? undefined : minRequeridoTurno(dISO, "turno_dia", reglas, festivoSet)} reglas={filtroPersonalId ? null : reglas} />
-              <TurnoMiniBox tipo="turno_noche" chips={noche} onChipClick={setDetail} min={filtroPersonalId ? undefined : minRequeridoTurno(dISO, "turno_noche", reglas, festivoSet)} reglas={filtroPersonalId ? null : reglas} />
+      <div className="overflow-x-auto ev-scroll" style={{ minWidth: 900 }}>
+        {semanas.map((semana, semIdx) => (
+          <div key={semIdx}>
+            {isMaestro && (
+              <div className="no-print flex justify-end px-3 py-1 border-b" style={{ borderColor: T.border, background: `${T.danger}08` }}>
+                <button onClick={() => borrarSemana(semana)} className="flex items-center gap-1 text-[10.5px] font-medium" style={{ color: T.danger }}>
+                  <Trash2 size={11} /> Borrar turnos de esta semana
+                </button>
+              </div>
+            )}
+            <div className="grid grid-cols-7">
+              {semana.map((d, i) => {
+                const dISO = toISO(d);
+                const inMonth = d.getMonth() === base.getMonth();
+                const dia = chipsFor(dISO, "turno_dia");
+                const noche = chipsFor(dISO, "turno_noche");
+                const festivoNombre = festivoSet.has(dISO) ? festivos.find((f) => f.fecha === dISO)?.nombre : null;
+                const hayTurnos = dia.length > 0 || noche.length > 0;
+                return (
+                  <div
+                    key={i}
+                    onClick={() => isMaestro && ctx.setModal({ mode: "new", event: null, defaultType: "turno_dia", prefill: { date: dISO, start: 7, end: 17 } })}
+                    className={`border-b border-r p-1.5 flex flex-col gap-1 min-h-[112px] ${isMaestro ? "cursor-pointer hover:bg-black/[0.02]" : ""}`}
+                    style={{ borderColor: T.border, opacity: inMonth ? 1 : 0.4, background: festivoNombre ? T.accentSoft : "transparent" }}
+                    title={festivoNombre || undefined}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="ev-display text-[12px] font-semibold w-5 h-5 flex items-center justify-center rounded-full shrink-0" style={{ background: dISO === todayISO ? T.primary : "transparent", color: dISO === todayISO ? "#fff" : T.ink }}>
+                        {d.getDate()}
+                      </span>
+                      {isMaestro && hayTurnos && (
+                        <button onClick={(ev) => { ev.stopPropagation(); borrarDia(dISO); }} title="Borrar turnos de este día" style={{ color: T.muted }}>
+                          <Trash2 size={12} />
+                        </button>
+                      )}
+                    </div>
+                    <TurnoMiniBox tipo="turno_dia" chips={dia} onChipClick={setDetail} min={filtroPersonalId ? undefined : minRequeridoTurno(dISO, "turno_dia", reglas, festivoSet)} reglas={filtroPersonalId ? null : reglas} />
+                    <TurnoMiniBox tipo="turno_noche" chips={noche} onChipClick={setDetail} min={filtroPersonalId ? undefined : minRequeridoTurno(dISO, "turno_noche", reglas, festivoSet)} reglas={filtroPersonalId ? null : reglas} />
+                  </div>
+                );
+              })}
             </div>
-          );
-        })}
+          </div>
+        ))}
       </div>
       <div className="flex items-center gap-2 px-4 py-2 text-[11px] border-t" style={{ borderColor: T.border, color: T.muted }}>
         <span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ background: T.accentSoft }} /> Día festivo
