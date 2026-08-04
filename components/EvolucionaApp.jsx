@@ -192,6 +192,17 @@ async function authRequest(endpoint, body) {
 }
 const authSignIn = (email, password) => authRequest("token?grant_type=password", { email, password });
 const authSignUp = (email, password) => authRequest("signup", { email, password });
+const authRecover = (email, redirectTo) => authRequest(`recover?redirect_to=${encodeURIComponent(redirectTo)}`, { email });
+async function authUpdatePassword(accessToken, newPassword) {
+  const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+    method: "PUT",
+    headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ password: newPassword }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error_description || data.msg || data.error || "No se pudo actualizar la contraseña");
+  return data;
+}
 
 
 function mapActividad(row) {
@@ -220,7 +231,7 @@ function mapBiblioteca(row) {
   return { id: row.id, nombre: row.nombre, tipo: row.tipo, metodologia: row.metodologia || "", objetivos: row.objetivos || "" };
 }
 function mapUsuario(row) {
-  return { id: row.id, nombre: row.nombre, correo: row.correo, rol: row.rol };
+  return { id: row.id, nombre: row.nombre, correo: row.correo, rol: row.rol, activo: row.activo !== false };
 }
 
 async function fetchAllRemote() {
@@ -321,6 +332,10 @@ async function fetchUsuarios() {
 }
 async function updateUsuarioRolRemote(id, rol) {
   const [row] = await sb(`usuarios?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ rol }) });
+  return mapUsuario(row);
+}
+async function updateUsuarioActivoRemote(id, activo) {
+  const [row] = await sb(`usuarios?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ activo }) });
   return mapUsuario(row);
 }
 
@@ -567,6 +582,20 @@ function useToast() {
 export default function EvolucionaApp() {
   const [theme, setTheme] = useTheme();
   const [session, setSession] = useState(null); // { email, rol }
+  const [recoveryToken, setRecoveryToken] = useState(undefined); // undefined = aún sin revisar; null = no hay; string = token de recuperación
+  React.useEffect(() => {
+    try {
+      const hash = window.location.hash || "";
+      const params = new URLSearchParams(hash.replace(/^#/, ""));
+      if (params.get("type") === "recovery" && params.get("access_token")) {
+        setRecoveryToken(params.get("access_token"));
+      } else {
+        setRecoveryToken(null);
+      }
+    } catch (_) {
+      setRecoveryToken(null);
+    }
+  }, []);
   const [view, setView] = useState("dashboard");
   const [events, setEvents] = useState([]);
   const [personal, setPersonal] = useState([]);
@@ -578,6 +607,7 @@ export default function EvolucionaApp() {
   const [plantillas, setPlantillas] = useState([]);
   const [plantillaItems, setPlantillaItems] = useState([]);
   const [avisos, setAvisos] = useState([]);
+  const [usuariosLista, setUsuariosLista] = useState([]);
   const [avisoModal, setAvisoModal] = useState(false);
   const [plantillaModal, setPlantillaModal] = useState(false); // modal para crear una nueva plantilla
   const [plantillaEditorId, setPlantillaEditorId] = useState(null); // id de la plantilla que se está editando
@@ -618,6 +648,7 @@ export default function EvolucionaApp() {
       setPlantillas(data.plantillas);
       setPlantillaItems(data.plantillaItems);
       setAvisos(data.avisos);
+      try { setUsuariosLista(await fetchUsuarios()); } catch (_) { setUsuariosLista([]); }
     } catch (err) {
       setLoadError(err.message || "No se pudo conectar a Supabase.");
     } finally {
@@ -647,6 +678,19 @@ export default function EvolucionaApp() {
     return () => clearInterval(id);
   }, [session]);
 
+  // Revisa cada 5 minutos si un Maestro desactivó esta cuenta mientras
+  // tenía la sesión abierta, para cerrarla de inmediato.
+  React.useEffect(() => {
+    if (!session) return;
+    const id = setInterval(async () => {
+      try {
+        const propio = await fetchOwnUsuario();
+        if (propio && propio.activo === false) onSesionExpirada();
+      } catch (_) {}
+    }, 5 * 60 * 1000);
+    return () => clearInterval(id);
+  }, [session]);
+
   function handleLogout() {
     ACCESS_TOKEN = null;
     REFRESH_TOKEN = null;
@@ -655,6 +699,10 @@ export default function EvolucionaApp() {
     setPersonal([]);
     setBiblioteca([]);
     setLoadError(null);
+  }
+
+  if (recoveryToken) {
+    return <ResetPasswordScreen token={recoveryToken} theme={theme} setTheme={setTheme} onDone={() => { window.location.hash = ""; setRecoveryToken(null); }} />;
   }
 
   if (!session) {
@@ -954,6 +1002,24 @@ export default function EvolucionaApp() {
       showToast(`No se pudo eliminar: ${err.message}`, "warn");
     }
   }
+  async function cambiarRolUsuario(id, rol) {
+    try {
+      const actualizado = await updateUsuarioRolRemote(id, rol);
+      setUsuariosLista((prev) => prev.map((u) => (u.id === id ? actualizado : u)));
+      showToast("Rol actualizado");
+    } catch (err) {
+      showToast(`No se pudo actualizar: ${err.message}`, "warn");
+    }
+  }
+  async function toggleActivoUsuario(id, actual) {
+    try {
+      const actualizado = await updateUsuarioActivoRemote(id, !actual);
+      setUsuariosLista((prev) => prev.map((u) => (u.id === id ? actualizado : u)));
+      showToast(actual ? "Usuario desactivado" : "Usuario reactivado", actual ? "warn" : "ok");
+    } catch (err) {
+      showToast(`No se pudo actualizar: ${err.message}`, "warn");
+    }
+  }
   async function reemplazarTurno(turno, nuevoPersonalId) {
     setSaving(true);
     try {
@@ -981,6 +1047,7 @@ export default function EvolucionaApp() {
     crearPlantilla, eliminarPlantilla, agregarPlantillaItem, eliminarPlantillaItem,
     aplicarPlantillaModal, setAplicarPlantillaModal, aplicarPlantilla,
     avisos, avisoModal, setAvisoModal, crearAviso, eliminarAviso,
+    usuariosLista, cambiarRolUsuario, toggleActivoUsuario,
     reglaPersonalModal, setReglaPersonalModal,
     reemplazarTurno,
   };
@@ -1150,7 +1217,10 @@ function LoginScreen({ onLogin, theme, setTheme }) {
     setError(null);
     setNotice(null);
     try {
-      if (mode === "signup") {
+      if (mode === "recover") {
+        await authRecover(form.correo, window.location.origin);
+        setNotice("Si ese correo está registrado, te llegará un enlace para crear una nueva contraseña. Revisa también spam.");
+      } else if (mode === "signup") {
         const res = await authSignUp(form.correo, form.password);
         if (res.access_token) {
           ACCESS_TOKEN = res.access_token;
@@ -1184,6 +1254,12 @@ function LoginScreen({ onLogin, theme, setTheme }) {
           } catch (_) { /* si falla, sigue como lector hasta que un maestro la revise */ }
           propio = await fetchOwnUsuario();
         }
+        if (propio && propio.activo === false) {
+          ACCESS_TOKEN = null;
+          REFRESH_TOKEN = null;
+          setError("Tu cuenta fue desactivada por un administrador. Contacta a un usuario Maestro.");
+          return;
+        }
         onLogin({ email: form.correo, rol: propio?.rol || "lector" });
       }
     } catch (err) {
@@ -1208,7 +1284,7 @@ function LoginScreen({ onLogin, theme, setTheme }) {
           <span style={{ fontFamily: "'Space Grotesk', sans-serif" }} className="text-[19px] font-semibold" >EVOLUCIONA</span>
         </div>
         <p className="text-[12px] mb-5" style={{ color: T.muted }}>
-          {mode === "signin" ? "Inicia sesión para continuar" : "Crea tu cuenta de coordinador"}
+          {mode === "signin" ? "Inicia sesión para continuar" : mode === "signup" ? "Crea tu cuenta de coordinador" : "Te enviaremos un enlace para restablecer tu contraseña"}
         </p>
 
         {mode === "signup" && (
@@ -1221,18 +1297,31 @@ function LoginScreen({ onLogin, theme, setTheme }) {
             <input required type="email" value={form.correo} onChange={(e) => set("correo", e.target.value)} style={inputStyle} placeholder="tu@institucion.com" />
           </Field>
         </div>
-        <div className="mt-3">
-          <Field label="Contraseña">
-            <input required type="password" minLength={6} value={form.password} onChange={(e) => set("password", e.target.value)} style={inputStyle} placeholder="Mínimo 6 caracteres" />
-          </Field>
-        </div>
+        {mode !== "recover" && (
+          <div className="mt-3">
+            <Field label="Contraseña">
+              <input required type="password" minLength={6} value={form.password} onChange={(e) => set("password", e.target.value)} style={inputStyle} placeholder="Mínimo 6 caracteres" />
+            </Field>
+          </div>
+        )}
 
         {error && <p className="text-[12px] mt-3 rounded-lg px-3 py-2" style={{ background: T.dangerSoft, color: T.danger }}>{error}</p>}
         {notice && <p className="text-[12px] mt-3 rounded-lg px-3 py-2" style={{ background: T.accentSoft, color: T.accentInk }}>{notice}</p>}
 
         <button type="submit" disabled={loading} className="ev-btn w-full justify-center px-4 py-2.5 text-[13px] text-white mt-4 disabled:opacity-50" style={{ background: T.primary }}>
-          {loading ? "Un momento…" : mode === "signin" ? "Iniciar sesión" : "Crear cuenta"}
+          {loading ? "Un momento…" : mode === "signin" ? "Iniciar sesión" : mode === "signup" ? "Crear cuenta" : "Enviar enlace de recuperación"}
         </button>
+
+        {mode === "signin" && (
+          <button
+            type="button"
+            onClick={() => { setMode("recover"); setError(null); setNotice(null); }}
+            className="w-full text-center text-[12px] mt-2.5"
+            style={{ color: T.muted }}
+          >
+            ¿Olvidaste tu contraseña?
+          </button>
+        )}
 
         <button
           type="button"
@@ -1240,9 +1329,76 @@ function LoginScreen({ onLogin, theme, setTheme }) {
           className="w-full text-center text-[12.5px] mt-3 font-medium"
           style={{ color: T.primary }}
         >
-          {mode === "signin" ? "¿No tienes cuenta? Crear una" : "¿Ya tienes cuenta? Inicia sesión"}
+          {mode === "recover" ? "¿Ya la recordaste? Inicia sesión" : mode === "signin" ? "¿No tienes cuenta? Crear una" : "¿Ya tienes cuenta? Inicia sesión"}
         </button>
       </form>
+    </div>
+  );
+}
+
+function ResetPasswordScreen({ token, theme, setTheme, onDone }) {
+  const [password, setPassword] = useState("");
+  const [password2, setPassword2] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [ok, setOk] = useState(false);
+
+  async function submit(e) {
+    e.preventDefault();
+    setError(null);
+    if (password.length < 6) { setError("La contraseña debe tener al menos 6 caracteres."); return; }
+    if (password !== password2) { setError("Las dos contraseñas no coinciden."); return; }
+    setLoading(true);
+    try {
+      await authUpdatePassword(token, password);
+      setOk(true);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div data-theme={theme} style={{ background: T.base, color: T.ink, fontFamily: "'Inter', sans-serif" }} className="ev-root relative w-full min-h-[720px] flex items-center justify-center p-6 transition-colors duration-200">
+      <style>{THEME_CSS}</style>
+      <style>{APP_BASE_CSS}</style>
+      <div className="absolute top-5 right-5">
+        <ThemeToggle theme={theme} setTheme={setTheme} />
+      </div>
+      <div className="ev-card w-full max-w-sm p-6" style={{ background: T.surface }}>
+        <div className="flex items-center gap-2 mb-1">
+          <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: T.primary }}>
+            <Sparkles size={16} color="#fff" />
+          </div>
+          <span style={{ fontFamily: "'Space Grotesk', sans-serif" }} className="text-[19px] font-semibold">EVOLUCIONA</span>
+        </div>
+
+        {ok ? (
+          <>
+            <p className="text-[13px] mt-4 mb-5" style={{ color: T.muted }}>Tu contraseña quedó actualizada. Ya puedes iniciar sesión con la nueva.</p>
+            <button onClick={onDone} className="ev-btn w-full justify-center px-4 py-2.5 text-[13px] text-white" style={{ background: T.primary }}>
+              Ir a iniciar sesión
+            </button>
+          </>
+        ) : (
+          <form onSubmit={submit}>
+            <p className="text-[12px] mb-5" style={{ color: T.muted }}>Crea una nueva contraseña para tu cuenta.</p>
+            <Field label="Nueva contraseña">
+              <input required type="password" minLength={6} value={password} onChange={(e) => setPassword(e.target.value)} style={inputStyle} placeholder="Mínimo 6 caracteres" />
+            </Field>
+            <div className="mt-3">
+              <Field label="Confirmar contraseña">
+                <input required type="password" minLength={6} value={password2} onChange={(e) => setPassword2(e.target.value)} style={inputStyle} placeholder="Repite la contraseña" />
+              </Field>
+            </div>
+            {error && <p className="text-[12px] mt-3 rounded-lg px-3 py-2" style={{ background: T.dangerSoft, color: T.danger }}>{error}</p>}
+            <button type="submit" disabled={loading} className="ev-btn w-full justify-center px-4 py-2.5 text-[13px] text-white mt-4 disabled:opacity-50" style={{ background: T.primary }}>
+              {loading ? "Guardando…" : "Guardar nueva contraseña"}
+            </button>
+          </form>
+        )}
+      </div>
     </div>
   );
 }
@@ -2855,6 +3011,65 @@ function Configuracion({ ctx }) {
           {ctx.reglasPersonal.length === 0 && <p className="px-5 py-6 text-[12.5px] text-center" style={{ color: T.muted }}>No hay reglas fijas por persona.</p>}
         </div>
       </div>
+
+      {isMaestro && (
+        <div className="ev-card overflow-hidden">
+          <div className="px-5 py-4 border-b" style={{ borderColor: T.border }}>
+            <h3 className="ev-display font-semibold text-[15px]">Usuarios registrados</h3>
+            <p className="text-[12px]" style={{ color: T.muted }}>Quién tiene acceso a Evoluciona. Puedes cambiar el rol o desactivar el acceso de alguien sin borrar su cuenta.</p>
+          </div>
+          <div className="overflow-x-auto ev-scroll">
+            <table className="w-full text-[13px]">
+              <thead>
+                <tr className="text-left" style={{ color: T.muted }}>
+                  {["Correo", "Rol", "Estado", ""].map((h) => (
+                    <th key={h} className="px-5 py-2 font-medium text-[12px] uppercase tracking-wide">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {ctx.usuariosLista.map((u) => {
+                  const esUnoMismo = u.correo === ctx.session?.email;
+                  return (
+                    <tr key={u.id} className="border-t" style={{ borderColor: T.border }}>
+                      <td className="px-5 py-2.5">{u.correo}{esUnoMismo && <span className="ml-1.5 text-[11px]" style={{ color: T.muted }}>(tú)</span>}</td>
+                      <td className="px-5 py-2.5">
+                        <select
+                          value={u.rol}
+                          disabled={esUnoMismo}
+                          onChange={(e) => ctx.cambiarRolUsuario(u.id, e.target.value)}
+                          style={{ ...inputStyle, width: "auto", opacity: esUnoMismo ? 0.6 : 1 }}
+                        >
+                          <option value="maestro">Maestro</option>
+                          <option value="lector">Lector</option>
+                        </select>
+                      </td>
+                      <td className="px-5 py-2.5">
+                        <span className="px-2.5 py-1 rounded-full text-[11.5px] font-semibold" style={{ background: u.activo ? T.primarySoft : T.dangerSoft, color: u.activo ? T.primaryDark : T.danger }}>
+                          {u.activo ? "Activo" : "Desactivado"}
+                        </span>
+                      </td>
+                      <td className="px-5 py-2.5 text-right">
+                        <button
+                          onClick={() => ctx.toggleActivoUsuario(u.id, u.activo)}
+                          disabled={esUnoMismo}
+                          className="ev-btn text-[12px] px-2.5 py-1 disabled:opacity-40"
+                          style={u.activo ? { background: T.dangerSoft, color: T.danger } : { border: `1px solid ${T.border}` }}
+                        >
+                          {u.activo ? "Desactivar" : "Reactivar"}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {ctx.usuariosLista.length === 0 && (
+                  <tr><td colSpan={4} className="px-5 py-6 text-center" style={{ color: T.muted }}>No hay usuarios registrados todavía.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {festivoModal && <FestivoModal ctx={ctx} onClose={() => setFestivoModal(false)} />}
       {ctx.reglaPersonalModal && <ReglaPersonalModal ctx={ctx} onClose={() => ctx.setReglaPersonalModal(false)} />}
