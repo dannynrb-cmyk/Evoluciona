@@ -43,6 +43,18 @@ import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import html2canvas from "html2canvas";
 
+/* ============================== LOGO ============================== */
+// "Cometa": un destello que deja una estela en espiral — progreso + continuidad.
+function LogoMark({ size = 16, color = "#fff", tailColor }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 130 130" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M50 100 a30 30 0 1 1 30 -68" stroke={tailColor || color} strokeWidth="9" fill="none" strokeLinecap="round" opacity="0.5" />
+      <path d="M82 26 L90 50 L114 58 L90 66 L82 90 L74 66 L50 58 L74 50 Z" fill={color} />
+      <circle cx="42" cy="98" r="5.5" fill="#E8A33D" />
+    </svg>
+  );
+}
+
 /* ============================== TOKENS ============================== */
 const T = {
   ink: "var(--ev-ink)",
@@ -1222,7 +1234,7 @@ export default function EvolucionaApp() {
           <div className="px-5 pt-6 pb-5">
             <div className="flex items-center gap-2">
               <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: T.accent }}>
-                <Sparkles size={16} color={T.primaryDark} />
+                <LogoMark size={16} color={T.primaryDark} />
               </div>
               <span className="ev-display text-white text-[19px] tracking-tight font-semibold whitespace-nowrap lg:opacity-0 lg:group-hover:opacity-100 transition-opacity duration-150">EVOLUCIONA</span>
             </div>
@@ -1402,7 +1414,7 @@ function LoginScreen({ onLogin, theme, setTheme }) {
       <form onSubmit={submit} className="ev-card w-full max-w-sm p-6" style={{ background: T.surface }}>
         <div className="flex items-center gap-2 mb-1">
           <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: T.primary }}>
-            <Sparkles size={16} color="#fff" />
+            <LogoMark size={16} color="#fff" />
           </div>
           <span style={{ fontFamily: "'Space Grotesk', sans-serif" }} className="text-[19px] font-semibold" >EVOLUCIONA</span>
         </div>
@@ -1492,7 +1504,7 @@ function ResetPasswordScreen({ token, theme, setTheme, onDone }) {
       <div className="ev-card w-full max-w-sm p-6" style={{ background: T.surface }}>
         <div className="flex items-center gap-2 mb-1">
           <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: T.primary }}>
-            <Sparkles size={16} color="#fff" />
+            <LogoMark size={16} color="#fff" />
           </div>
           <span style={{ fontFamily: "'Space Grotesk', sans-serif" }} className="text-[19px] font-semibold">EVOLUCIONA</span>
         </div>
