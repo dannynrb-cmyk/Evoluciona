@@ -27,6 +27,7 @@ import {
   Moon,
   Copy,
   Megaphone,
+  GraduationCap,
 } from "lucide-react";
 import {
   BarChart,
@@ -244,12 +245,55 @@ async function insertTemaRemote(nombre) {
 async function deleteTemaRemote(id) {
   await sb(`temas_biblioteca?id=eq.${id}`, { method: "DELETE", prefer: "return=minimal" });
 }
+
+const FORMACION_BUCKET = "formacion-continua";
+async function subirArchivoFormacion(file) {
+  const path = `${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+  const res = await fetch(`${SUPABASE_URL}/storage/v1/object/${FORMACION_BUCKET}/${encodeURIComponent(path)}`, {
+    method: "POST",
+    headers: {
+      apikey: SUPABASE_KEY,
+      Authorization: `Bearer ${ACCESS_TOKEN || SUPABASE_KEY}`,
+      "Content-Type": file.type || "application/octet-stream",
+    },
+    body: file,
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`No se pudo subir el archivo (${res.status}): ${text.slice(0, 180)}`);
+  }
+  return { path, url: `${SUPABASE_URL}/storage/v1/object/public/${FORMACION_BUCKET}/${path}` };
+}
+function mapFormacion(row) {
+  return { id: row.id, titulo: row.titulo, descripcion: row.descripcion || "", tipo: row.tipo, archivoPath: row.archivo_path, archivoUrl: row.archivo_url, autor: row.autor || "", createdAt: row.created_at };
+}
+async function fetchFormacion() {
+  const rows = await sb("formacion_continua?select=*&order=created_at.desc");
+  return rows.map(mapFormacion);
+}
+async function insertFormacionRemote(form) {
+  const [row] = await sb("formacion_continua", {
+    method: "POST",
+    body: JSON.stringify({ titulo: form.titulo, descripcion: form.descripcion || null, tipo: form.tipo, archivo_path: form.archivoPath, archivo_url: form.archivoUrl, autor: form.autor || null }),
+  });
+  return mapFormacion(row);
+}
+async function deleteFormacionRemote(item) {
+  await sb(`formacion_continua?id=eq.${item.id}`, { method: "DELETE", prefer: "return=minimal" });
+  try {
+    await fetch(`${SUPABASE_URL}/storage/v1/object/${FORMACION_BUCKET}/${encodeURIComponent(item.archivoPath)}`, {
+      method: "DELETE",
+      headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${ACCESS_TOKEN || SUPABASE_KEY}` },
+    });
+  } catch (_) { /* si falla borrar el archivo físico, el registro igual desaparece de la lista */ }
+}
+
 function mapUsuario(row) {
   return { id: row.id, nombre: row.nombre, correo: row.correo, rol: row.rol, activo: row.activo !== false };
 }
 
 async function fetchAllRemote() {
-  const [personalRows, actRows, turnRows, bibRows, reglasRow, festivoRows, novedadRows, reglaPersonalRows, plantillaRows, plantillaItemRows, avisoRows, temaRows] = await Promise.all([
+  const [personalRows, actRows, turnRows, bibRows, reglasRow, festivoRows, novedadRows, reglaPersonalRows, plantillaRows, plantillaItemRows, avisoRows, temaRows, formacionRows] = await Promise.all([
     sb("personal?select=*&order=nombre"),
     sb("actividades?select=*"),
     sb("turnos?select=*"),
@@ -262,6 +306,7 @@ async function fetchAllRemote() {
     sb("plantilla_actividades?select=*"),
     sb("avisos_tablero?select=*&order=created_at.desc"),
     sb("temas_biblioteca?select=*&order=nombre"),
+    sb("formacion_continua?select=*&order=created_at.desc"),
   ]);
   return {
     personal: personalRows.map(mapPersonal),
@@ -275,6 +320,7 @@ async function fetchAllRemote() {
     plantillaItems: plantillaItemRows.map(mapPlantillaItem),
     avisos: avisoRows.map(mapAviso),
     temas: temaRows.map(mapTema),
+    formacion: formacionRows.map(mapFormacion),
   };
 }
 async function fetchEventsRemote() {
@@ -533,6 +579,7 @@ const NAV = [
   { key: "turnos", label: "Turnos", icon: Clock },
   { key: "novedades", label: "Novedades", icon: UserX },
   { key: "biblioteca", label: "Biblioteca", icon: BookOpen },
+  { key: "formacion", label: "Formación Continua", icon: GraduationCap },
   { key: "personal", label: "Personal", icon: Users },
   { key: "reportes", label: "Reportes", icon: FileBarChart },
   { key: "configuracion", label: "Configuración", icon: Settings },
@@ -626,6 +673,9 @@ export default function EvolucionaApp() {
   const [usuariosLista, setUsuariosLista] = useState([]);
   const [temas, setTemas] = useState([]);
   const [temaModal, setTemaModal] = useState(false);
+  const [formacion, setFormacion] = useState([]);
+  const [formacionModal, setFormacionModal] = useState(false);
+  const [subiendoArchivo, setSubiendoArchivo] = useState(false);
   const [avisoModal, setAvisoModal] = useState(false);
   const [plantillaModal, setPlantillaModal] = useState(false); // modal para crear una nueva plantilla
   const [plantillaEditorId, setPlantillaEditorId] = useState(null); // id de la plantilla que se está editando
@@ -667,6 +717,7 @@ export default function EvolucionaApp() {
       setPlantillaItems(data.plantillaItems);
       setAvisos(data.avisos);
       setTemas(data.temas);
+      setFormacion(data.formacion);
       try { setUsuariosLista(await fetchUsuarios()); } catch (_) { setUsuariosLista([]); }
     } catch (err) {
       setLoadError(err.message || "No se pudo conectar a Supabase.");
@@ -1063,6 +1114,30 @@ export default function EvolucionaApp() {
       showToast(`No se pudo eliminar: ${err.message}`, "warn");
     }
   }
+  async function subirFormacion(form, file) {
+    setSubiendoArchivo(true);
+    try {
+      const { path, url } = await subirArchivoFormacion(file);
+      const saved = await insertFormacionRemote({ ...form, archivoPath: path, archivoUrl: url, autor: session?.email || "" });
+      setFormacion((prev) => [saved, ...prev]);
+      setFormacionModal(false);
+      showToast("Contenido publicado");
+    } catch (err) {
+      showToast(`No se pudo subir: ${err.message}`, "warn");
+    } finally {
+      setSubiendoArchivo(false);
+    }
+  }
+  async function eliminarFormacion(item) {
+    if (!window.confirm(`¿Eliminar "${item.titulo}"? Esto borra también el archivo.`)) return;
+    try {
+      await deleteFormacionRemote(item);
+      setFormacion((prev) => prev.filter((f) => f.id !== item.id));
+      showToast("Contenido eliminado", "warn");
+    } catch (err) {
+      showToast(`No se pudo eliminar: ${err.message}`, "warn");
+    }
+  }
   async function reemplazarTurno(turno, nuevoPersonalId) {
     setSaving(true);
     try {
@@ -1092,6 +1167,7 @@ export default function EvolucionaApp() {
     avisos, avisoModal, setAvisoModal, crearAviso, eliminarAviso,
     usuariosLista, cambiarRolUsuario, toggleActivoUsuario,
     temas, temaModal, setTemaModal, crearTema, eliminarTema,
+    formacion, formacionModal, setFormacionModal, subiendoArchivo, subirFormacion, eliminarFormacion,
     reglaPersonalModal, setReglaPersonalModal,
     reemplazarTurno,
   };
@@ -1227,6 +1303,7 @@ export default function EvolucionaApp() {
           {view === "turnos" && <TurnosCalendario ctx={ctx} />}
           {view === "novedades" && <Novedades ctx={ctx} />}
           {view === "biblioteca" && <Biblioteca ctx={ctx} />}
+          {view === "formacion" && <FormacionContinua ctx={ctx} />}
           {view === "personal" && <Personal ctx={ctx} />}
           {view === "reportes" && <Reportes ctx={ctx} />}
           {view === "configuracion" && <Configuracion ctx={ctx} />}
@@ -1239,6 +1316,7 @@ export default function EvolucionaApp() {
       {bibModal && <BibliotecaModal ctx={ctx} onClose={() => setBibModal(null)} initial={bibModal} />}
       {plantillaModal && <NuevaPlantillaModal ctx={ctx} onClose={() => setPlantillaModal(false)} />}
       {temaModal && <TemaModal ctx={ctx} onClose={() => setTemaModal(false)} />}
+      {formacionModal && <FormacionModal ctx={ctx} onClose={() => setFormacionModal(false)} />}
       {aplicarPlantillaModal && <AplicarPlantillaModal ctx={ctx} onClose={() => setAplicarPlantillaModal(null)} />}
       {avisoModal && <AvisoModal ctx={ctx} onClose={() => setAvisoModal(false)} />}
       {toast && <Toast toast={toast} />}
@@ -1504,7 +1582,7 @@ function calcularAlertasDashboard(events, personal, reglas) {
 }
 
 function Dashboard({ ctx }) {
-  const { events, personal, reglas, setView, setModal, avisos, isMaestro, setAvisoModal, eliminarAviso } = ctx;
+  const { events, personal, reglas, setView, setModal, avisos, isMaestro, setAvisoModal, eliminarAviso, formacion } = ctx;
   const todayISO = toISO(TODAY);
   const todayEvents = events.filter((e) => e.date === todayISO).sort((a, b) => a.start - b.start);
   const activos = personal.filter((p) => p.estado === "activo").length;
@@ -1615,19 +1693,30 @@ function Dashboard({ ctx }) {
       )}
 
       <div className="ev-card p-5">
-        <h3 className="ev-display font-semibold text-[15px] mb-1">Control de horas · esta semana</h3>
-        <p className="text-[12px] mb-4" style={{ color: T.muted }}>Horas contratadas vs. horas asignadas en turnos, por persona activa</p>
-        <div style={{ width: "100%", height: 220 }}>
-          <ResponsiveContainer>
-            <BarChart data={horasData} barGap={4}>
-              <CartesianGrid strokeDasharray="3 3" stroke={T.border} vertical={false} />
-              <XAxis dataKey="nombre" tick={{ fontSize: 11.5, fill: T.muted }} axisLine={{ stroke: T.border }} tickLine={false} />
-              <YAxis tick={{ fontSize: 11, fill: T.muted }} axisLine={false} tickLine={false} />
-              <Tooltip contentStyle={{ borderRadius: 10, border: `1px solid ${T.border}`, fontSize: 12.5 }} />
-              <Bar dataKey="Contratadas" fill={T.border} radius={[4, 4, 0, 0]} />
-              <Bar dataKey="Asignadas" fill={T.primary} radius={[4, 4, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
+        <div className="flex items-center justify-between mb-1">
+          <h3 className="ev-display font-semibold text-[15px] flex items-center gap-2">
+            <GraduationCap size={15} style={{ color: T.primary }} /> Formación continua
+          </h3>
+          <button onClick={() => setView("formacion")} className="text-[12.5px] font-semibold flex items-center gap-1" style={{ color: T.primary }}>
+            Ver todo <ArrowRight size={13} />
+          </button>
+        </div>
+        <p className="text-[12px] mb-4" style={{ color: T.muted }}>Infografías, mapas mentales y videos cortos disponibles para el equipo</p>
+        <div className="grid sm:grid-cols-3 gap-3">
+          {formacion.slice(0, 3).map((f) => (
+            <button key={f.id} onClick={() => setView("formacion")} className="ev-card overflow-hidden text-left hover:shadow-md transition-shadow" style={{ border: `1px solid ${T.border}` }}>
+              <div className="w-full flex items-center justify-center overflow-hidden" style={{ height: 90, background: T.base }}>
+                {f.tipo === "video" ? <video src={f.archivoUrl} className="w-full h-full object-cover" /> : <img src={f.archivoUrl} alt={f.titulo} className="w-full h-full object-cover" />}
+              </div>
+              <div className="p-2.5">
+                <p className="text-[12px] font-semibold truncate">{f.titulo}</p>
+                <p className="text-[10.5px]" style={{ color: T.muted }}>{TIPO_FORMACION[f.tipo] || f.tipo}</p>
+              </div>
+            </button>
+          ))}
+          {formacion.length === 0 && (
+            <p className="text-[12.5px] col-span-full text-center py-6" style={{ color: T.muted }}>Todavía no hay contenido publicado.</p>
+          )}
         </div>
       </div>
     </div>
@@ -3978,6 +4067,107 @@ function PlantillaItemForm({ ctx, plantillaId, diaSemana, biblioteca, onClose })
         >
           Agregar
         </button>
+      </div>
+    </div>
+  );
+}
+
+const TIPO_FORMACION = { infografia: "Infografía", mapa_mental: "Mapa mental", video: "Video", otro: "Otro" };
+
+function FormacionContinua({ ctx }) {
+  const { formacion, isMaestro, setFormacionModal, eliminarFormacion } = ctx;
+  return (
+    <div className="flex flex-col gap-4">
+      <ReadOnlyBanner isMaestro={isMaestro} />
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="ev-display font-semibold text-[16px]">Formación continua</h3>
+          <p className="text-[12.5px]" style={{ color: T.muted }}>Infografías, mapas mentales y videos cortos sobre temas específicos, para todo el equipo.</p>
+        </div>
+        {isMaestro && (
+          <button onClick={() => setFormacionModal(true)} className="ev-btn px-3.5 py-2 text-[12.5px] text-white shrink-0" style={{ background: T.primary }}>
+            <Plus size={14} /> Subir contenido
+          </button>
+        )}
+      </div>
+      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        {formacion.map((f) => (
+          <div key={f.id} className="ev-card overflow-hidden flex flex-col">
+            <div className="w-full flex items-center justify-center overflow-hidden" style={{ height: 150, background: T.base }}>
+              {f.tipo === "video" ? (
+                <video src={f.archivoUrl} controls className="w-full h-full object-cover" />
+              ) : (
+                <img src={f.archivoUrl} alt={f.titulo} className="w-full h-full object-cover" />
+              )}
+            </div>
+            <div className="p-3.5 flex flex-col gap-1.5 flex-1">
+              <span className="self-start px-2 py-0.5 rounded-full text-[10.5px] font-semibold" style={{ background: T.primarySoft, color: T.primaryDark }}>
+                {TIPO_FORMACION[f.tipo] || f.tipo}
+              </span>
+              <h4 className="font-semibold text-[13.5px]">{f.titulo}</h4>
+              {f.descripcion && <p className="text-[12px] line-clamp-3" style={{ color: T.muted }}>{f.descripcion}</p>}
+              <p className="text-[10.5px] mt-auto pt-1" style={{ color: T.muted }}>
+                {f.autor ? `${f.autor} · ` : ""}{new Date(f.createdAt).toLocaleDateString("es-CO", { day: "numeric", month: "short", year: "numeric" })}
+              </p>
+              {isMaestro && (
+                <button onClick={() => eliminarFormacion(f)} className="ev-btn text-[12px] px-2.5 py-1 mt-1 self-start" style={{ background: T.dangerSoft, color: T.danger }}>
+                  <Trash2 size={12} /> Eliminar
+                </button>
+              )}
+            </div>
+          </div>
+        ))}
+        {formacion.length === 0 && (
+          <p className="text-[12.5px] col-span-full text-center py-10" style={{ color: T.muted }}>Todavía no hay contenido publicado.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function FormacionModal({ ctx, onClose }) {
+  const { subirFormacion, subiendoArchivo } = ctx;
+  const [form, setForm] = useState({ titulo: "", descripcion: "", tipo: "infografia" });
+  const [file, setFile] = useState(null);
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="ev-card w-full max-w-sm p-5 max-h-[90vh] overflow-y-auto ev-scroll">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="ev-display font-semibold text-[16px]">Subir contenido</h3>
+          <button onClick={onClose}><X size={18} /></button>
+        </div>
+        <div className="flex flex-col gap-3.5">
+          <Field label="Título">
+            <input value={form.titulo} onChange={(e) => set("titulo", e.target.value)} placeholder="Ej. Manejo de crisis" style={inputStyle} />
+          </Field>
+          <Field label="Tipo">
+            <select value={form.tipo} onChange={(e) => set("tipo", e.target.value)} style={inputStyle}>
+              {Object.entries(TIPO_FORMACION).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+            </select>
+          </Field>
+          <Field label="Descripción (opcional)">
+            <textarea rows={3} value={form.descripcion} onChange={(e) => set("descripcion", e.target.value)} placeholder="De qué trata…" style={{ ...inputStyle, resize: "vertical" }} />
+          </Field>
+          <Field label={form.tipo === "video" ? "Archivo de video" : "Archivo de imagen"}>
+            <input type="file" accept={form.tipo === "video" ? "video/*" : "image/*"} onChange={(e) => setFile(e.target.files?.[0] || null)} style={{ ...inputStyle, padding: "6px 8px" }} />
+          </Field>
+          <p className="text-[11px]" style={{ color: T.muted }}>
+            El plan gratuito tiene 1 GB de espacio en total para archivos — para videos, prefiere clips cortos (1-3 minutos) para no llenarlo rápido.
+          </p>
+        </div>
+        <div className="flex justify-end gap-2 mt-5">
+          <button onClick={onClose} className="ev-btn px-4 py-2 text-[13px]" style={{ border: `1px solid ${T.border}` }}>Cancelar</button>
+          <button
+            onClick={() => subirFormacion(form, file)}
+            disabled={!form.titulo || !file || subiendoArchivo}
+            className="ev-btn px-4 py-2 text-[13px] text-white disabled:opacity-40"
+            style={{ background: T.primary }}
+          >
+            {subiendoArchivo ? "Subiendo…" : "Publicar"}
+          </button>
+        </div>
       </div>
     </div>
   );
