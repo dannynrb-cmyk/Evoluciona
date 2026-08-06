@@ -300,12 +300,59 @@ async function deleteFormacionRemote(item) {
   } catch (_) { /* si falla borrar el archivo físico, el registro igual desaparece de la lista */ }
 }
 
+function mapVisto(row) {
+  return { id: row.id, formacionId: row.formacion_id, usuarioId: row.usuario_id, fecha: row.fecha };
+}
+async function fetchVistos() {
+  const rows = await sb("formacion_vistos?select=*");
+  return rows.map(mapVisto);
+}
+async function marcarVistoRemote(formacionId, usuarioId) {
+  const [row] = await sb("formacion_vistos", { method: "POST", body: JSON.stringify({ formacion_id: formacionId, usuario_id: usuarioId }) });
+  return mapVisto(row);
+}
+
+function mapPregunta(row) {
+  return { id: row.id, formacionId: row.formacion_id, pregunta: row.pregunta, opciones: row.opciones || [], respuestaCorrecta: row.respuesta_correcta, orden: row.orden };
+}
+async function fetchPreguntas() {
+  const rows = await sb("formacion_preguntas?select=*&order=orden");
+  return rows.map(mapPregunta);
+}
+async function insertPreguntaRemote(form) {
+  const [row] = await sb("formacion_preguntas", {
+    method: "POST",
+    body: JSON.stringify({ formacion_id: form.formacionId, pregunta: form.pregunta, opciones: form.opciones, respuesta_correcta: form.respuestaCorrecta, orden: form.orden || 0 }),
+  });
+  return mapPregunta(row);
+}
+async function deletePreguntaRemote(id) {
+  await sb(`formacion_preguntas?id=eq.${id}`, { method: "DELETE", prefer: "return=minimal" });
+}
+
+function mapResultado(row) {
+  return { id: row.id, formacionId: row.formacion_id, usuarioId: row.usuario_id, correctas: row.correctas, total: row.total, calificacion: Number(row.calificacion), fecha: row.fecha };
+}
+async function fetchResultados() {
+  const rows = await sb("formacion_resultados?select=*");
+  return rows.map(mapResultado);
+}
+async function guardarResultadoRemote(form, existente) {
+  const body = { formacion_id: form.formacionId, usuario_id: form.usuarioId, correctas: form.correctas, total: form.total, calificacion: form.calificacion, fecha: new Date().toISOString() };
+  if (existente) {
+    const [row] = await sb(`formacion_resultados?id=eq.${existente.id}`, { method: "PATCH", body: JSON.stringify(body) });
+    return mapResultado(row);
+  }
+  const [row] = await sb("formacion_resultados", { method: "POST", body: JSON.stringify(body) });
+  return mapResultado(row);
+}
+
 function mapUsuario(row) {
   return { id: row.id, nombre: row.nombre, correo: row.correo, rol: row.rol, activo: row.activo !== false };
 }
 
 async function fetchAllRemote() {
-  const [personalRows, actRows, turnRows, bibRows, reglasRow, festivoRows, novedadRows, reglaPersonalRows, plantillaRows, plantillaItemRows, avisoRows, temaRows, formacionRows] = await Promise.all([
+  const [personalRows, actRows, turnRows, bibRows, reglasRow, festivoRows, novedadRows, reglaPersonalRows, plantillaRows, plantillaItemRows, avisoRows, temaRows, formacionRows, vistoRows, preguntaRows, resultadoRows] = await Promise.all([
     sb("personal?select=*&order=nombre"),
     sb("actividades?select=*"),
     sb("turnos?select=*"),
@@ -319,6 +366,9 @@ async function fetchAllRemote() {
     sb("avisos_tablero?select=*&order=created_at.desc"),
     sb("temas_biblioteca?select=*&order=nombre"),
     sb("formacion_continua?select=*&order=created_at.desc"),
+    sb("formacion_vistos?select=*"),
+    sb("formacion_preguntas?select=*&order=orden"),
+    sb("formacion_resultados?select=*"),
   ]);
   return {
     personal: personalRows.map(mapPersonal),
@@ -333,6 +383,9 @@ async function fetchAllRemote() {
     avisos: avisoRows.map(mapAviso),
     temas: temaRows.map(mapTema),
     formacion: formacionRows.map(mapFormacion),
+    vistos: vistoRows.map(mapVisto),
+    preguntas: preguntaRows.map(mapPregunta),
+    resultados: resultadoRows.map(mapResultado),
   };
 }
 async function fetchEventsRemote() {
@@ -600,10 +653,19 @@ const TURNO_TYPES = ["turno_dia", "turno_noche"];
 const ACTIVIDAD_TYPES = Object.keys(ACTIVITY_TYPES).filter((k) => !TURNO_TYPES.includes(k));
 // Valores por defecto si aún no cargaron las reglas desde Supabase.
 const TURNO_CARGOS_DEFAULT = ["operador terapéutico", "auxiliar de enfermería"];
+// Normaliza texto para comparar cargos sin que un tilde de más/de menos
+// o un espacio extra haga que alguien no aparezca para asignar turno.
+function normalizarTexto(s) {
+  return (s || "")
+    .toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // quita tildes
+    .trim()
+    .replace(/\s+/g, " ");
+}
 function esCargoDeTurno(cargo, cargosTurno) {
-  const c = (cargo || "").toLowerCase();
-  const lista = (cargosTurno && cargosTurno.length ? cargosTurno : TURNO_CARGOS_DEFAULT).map((x) => x.toLowerCase());
-  return lista.some((t) => c.includes(t));
+  const c = normalizarTexto(cargo);
+  const lista = (cargosTurno && cargosTurno.length ? cargosTurno : TURNO_CARGOS_DEFAULT).map(normalizarTexto);
+  return lista.some((t) => t && c.includes(t));
 }
 
 /* ============================== HELPERS ============================== */
@@ -688,6 +750,12 @@ export default function EvolucionaApp() {
   const [formacion, setFormacion] = useState([]);
   const [formacionModal, setFormacionModal] = useState(false);
   const [subiendoArchivo, setSubiendoArchivo] = useState(false);
+  const [vistos, setVistos] = useState([]);
+  const [preguntas, setPreguntas] = useState([]);
+  const [resultados, setResultados] = useState([]);
+  const [testModal, setTestModal] = useState(null); // formacion sobre la que se presenta el test
+  const [gestionarTestModal, setGestionarTestModal] = useState(null); // formacion que el Maestro está editando
+  const [participacionModal, setParticipacionModal] = useState(null); // formacion a revisar
   const [avisoModal, setAvisoModal] = useState(false);
   const [plantillaModal, setPlantillaModal] = useState(false); // modal para crear una nueva plantilla
   const [plantillaEditorId, setPlantillaEditorId] = useState(null); // id de la plantilla que se está editando
@@ -730,6 +798,9 @@ export default function EvolucionaApp() {
       setAvisos(data.avisos);
       setTemas(data.temas);
       setFormacion(data.formacion);
+      setVistos(data.vistos);
+      setPreguntas(data.preguntas);
+      setResultados(data.resultados);
       try { setUsuariosLista(await fetchUsuarios()); } catch (_) { setUsuariosLista([]); }
     } catch (err) {
       setLoadError(err.message || "No se pudo conectar a Supabase.");
@@ -1150,6 +1221,57 @@ export default function EvolucionaApp() {
       showToast(`No se pudo eliminar: ${err.message}`, "warn");
     }
   }
+  async function marcarVisto(formacionId) {
+    if (!session?.id) return;
+    if (vistos.some((v) => v.formacionId === formacionId && v.usuarioId === session.id)) return;
+    try {
+      const saved = await marcarVistoRemote(formacionId, session.id);
+      setVistos((prev) => [...prev, saved]);
+      showToast("Marcado como visto");
+    } catch (err) {
+      showToast(`No se pudo registrar: ${err.message}`, "warn");
+    }
+  }
+  async function guardarPregunta(form) {
+    setSaving(true);
+    try {
+      const saved = await insertPreguntaRemote(form);
+      setPreguntas((prev) => [...prev, saved]);
+      showToast("Pregunta agregada");
+    } catch (err) {
+      showToast(`No se pudo guardar: ${err.message}`, "warn");
+    } finally {
+      setSaving(false);
+    }
+  }
+  async function eliminarPregunta(id) {
+    try {
+      await deletePreguntaRemote(id);
+      setPreguntas((prev) => prev.filter((p) => p.id !== id));
+      showToast("Pregunta eliminada", "warn");
+    } catch (err) {
+      showToast(`No se pudo eliminar: ${err.message}`, "warn");
+    }
+  }
+  async function enviarResultado(formacionId, correctas, total) {
+    if (!session?.id) return;
+    setSaving(true);
+    try {
+      const existente = resultados.find((r) => r.formacionId === formacionId && r.usuarioId === session.id);
+      const calificacion = total > 0 ? Math.round((correctas / total) * 100) : 0;
+      const saved = await guardarResultadoRemote({ formacionId, usuarioId: session.id, correctas, total, calificacion }, existente);
+      setResultados((prev) => {
+        const exists = prev.some((r) => r.id === saved.id);
+        return exists ? prev.map((r) => (r.id === saved.id ? saved : r)) : [...prev, saved];
+      });
+      showToast(`Test enviado — obtuviste ${calificacion}%`);
+      return calificacion;
+    } catch (err) {
+      showToast(`No se pudo enviar: ${err.message}`, "warn");
+    } finally {
+      setSaving(false);
+    }
+  }
   async function reemplazarTurno(turno, nuevoPersonalId) {
     setSaving(true);
     try {
@@ -1180,6 +1302,8 @@ export default function EvolucionaApp() {
     usuariosLista, cambiarRolUsuario, toggleActivoUsuario,
     temas, temaModal, setTemaModal, crearTema, eliminarTema,
     formacion, formacionModal, setFormacionModal, subiendoArchivo, subirFormacion, eliminarFormacion,
+    vistos, preguntas, resultados, marcarVisto, guardarPregunta, eliminarPregunta, enviarResultado,
+    testModal, setTestModal, gestionarTestModal, setGestionarTestModal, participacionModal, setParticipacionModal,
     reglaPersonalModal, setReglaPersonalModal,
     reemplazarTurno,
   };
@@ -1329,6 +1453,9 @@ export default function EvolucionaApp() {
       {plantillaModal && <NuevaPlantillaModal ctx={ctx} onClose={() => setPlantillaModal(false)} />}
       {temaModal && <TemaModal ctx={ctx} onClose={() => setTemaModal(false)} />}
       {formacionModal && <FormacionModal ctx={ctx} onClose={() => setFormacionModal(false)} />}
+      {testModal && <TestModal ctx={ctx} onClose={() => setTestModal(null)} />}
+      {gestionarTestModal && <GestionarTestModal ctx={ctx} onClose={() => setGestionarTestModal(null)} />}
+      {participacionModal && <ParticipacionModal ctx={ctx} onClose={() => setParticipacionModal(null)} />}
       {aplicarPlantillaModal && <AplicarPlantillaModal ctx={ctx} onClose={() => setAplicarPlantillaModal(null)} />}
       {avisoModal && <AvisoModal ctx={ctx} onClose={() => setAvisoModal(false)} />}
       {toast && <Toast toast={toast} />}
@@ -1367,7 +1494,7 @@ function LoginScreen({ onLogin, theme, setTheme }) {
             });
           } catch (_) { /* la cuenta ya quedó creada; el registro en "usuarios" se puede reintentar luego */ }
           const propio = await fetchOwnUsuario();
-          onLogin({ email: form.correo, rol: propio?.rol || "lector" });
+          onLogin({ id: propio?.id, email: form.correo, rol: propio?.rol || "lector" });
         } else {
           setNotice("Cuenta creada. Si tu proyecto exige confirmar el correo, revisa tu bandeja y luego inicia sesión aquí.");
           setMode("signin");
@@ -1395,7 +1522,7 @@ function LoginScreen({ onLogin, theme, setTheme }) {
           setError("Tu cuenta fue desactivada por un administrador. Contacta a un usuario Maestro.");
           return;
         }
-        onLogin({ email: form.correo, rol: propio?.rol || "lector" });
+        onLogin({ id: propio?.id, email: form.correo, rol: propio?.rol || "lector" });
       }
     } catch (err) {
       setError(err.message);
@@ -1795,10 +1922,10 @@ function minRequeridoTurno(dISO, tipo, reglas, festivoSet) {
 }
 
 function esOperador(cargo, reglas) {
-  return (cargo || "").toLowerCase().includes((reglas?.cargoOperador || "operador terapéutico").toLowerCase());
+  return normalizarTexto(cargo).includes(normalizarTexto(reglas?.cargoOperador || "operador terapéutico"));
 }
 function esAuxiliar(cargo, reglas) {
-  return (cargo || "").toLowerCase().includes((reglas?.cargoAuxiliar || "auxiliar de enfermería").toLowerCase());
+  return normalizarTexto(cargo).includes(normalizarTexto(reglas?.cargoAuxiliar || "auxiliar de enfermería"));
 }
 
 /* ============================== MOTOR DE GENERACIÓN AUTOMÁTICA (borrador) ============================== */
@@ -4087,7 +4214,7 @@ function PlantillaItemForm({ ctx, plantillaId, diaSemana, biblioteca, onClose })
 const TIPO_FORMACION = { infografia: "Infografía", mapa_mental: "Mapa mental", video: "Video", otro: "Otro" };
 
 function FormacionContinua({ ctx }) {
-  const { formacion, isMaestro, setFormacionModal, eliminarFormacion } = ctx;
+  const { formacion, isMaestro, setFormacionModal, eliminarFormacion, session, vistos, preguntas, resultados, marcarVisto, setTestModal, setGestionarTestModal, setParticipacionModal } = ctx;
   return (
     <div className="flex flex-col gap-4">
       <ReadOnlyBanner isMaestro={isMaestro} />
@@ -4103,32 +4230,71 @@ function FormacionContinua({ ctx }) {
         )}
       </div>
       <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        {formacion.map((f) => (
-          <div key={f.id} className="ev-card overflow-hidden flex flex-col">
-            <div className="w-full flex items-center justify-center overflow-hidden" style={{ height: 150, background: T.base }}>
-              {f.tipo === "video" ? (
-                <video src={f.archivoUrl} controls className="w-full h-full object-cover" />
-              ) : (
-                <img src={f.archivoUrl} alt={f.titulo} className="w-full h-full object-cover" />
-              )}
+        {formacion.map((f) => {
+          const miVisto = vistos.find((v) => v.formacionId === f.id && v.usuarioId === session?.id);
+          const susPreguntas = preguntas.filter((p) => p.formacionId === f.id);
+          const miResultado = resultados.find((r) => r.formacionId === f.id && r.usuarioId === session?.id);
+          const totalVistos = vistos.filter((v) => v.formacionId === f.id).length;
+          const totalTests = resultados.filter((r) => r.formacionId === f.id).length;
+          return (
+            <div key={f.id} className="ev-card overflow-hidden flex flex-col">
+              <div className="w-full flex items-center justify-center overflow-hidden" style={{ height: 150, background: T.base }}>
+                {f.tipo === "video" ? (
+                  <video src={f.archivoUrl} controls className="w-full h-full object-cover" />
+                ) : (
+                  <img src={f.archivoUrl} alt={f.titulo} className="w-full h-full object-cover" />
+                )}
+              </div>
+              <div className="p-3.5 flex flex-col gap-1.5 flex-1">
+                <span className="self-start px-2 py-0.5 rounded-full text-[10.5px] font-semibold" style={{ background: T.primarySoft, color: T.primaryDark }}>
+                  {TIPO_FORMACION[f.tipo] || f.tipo}
+                </span>
+                <h4 className="font-semibold text-[13.5px]">{f.titulo}</h4>
+                {f.descripcion && <p className="text-[12px] line-clamp-3" style={{ color: T.muted }}>{f.descripcion}</p>}
+                <p className="text-[10.5px]" style={{ color: T.muted }}>
+                  {f.autor ? `${f.autor} · ` : ""}{new Date(f.createdAt).toLocaleDateString("es-CO", { day: "numeric", month: "short", year: "numeric" })}
+                </p>
+
+                <div className="flex flex-wrap gap-1.5 mt-1">
+                  {miVisto ? (
+                    <span className="flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium" style={{ background: T.primarySoft, color: T.primaryDark }}>
+                      <CheckCircle2 size={11} /> Visto el {new Date(miVisto.fecha).toLocaleDateString("es-CO", { day: "numeric", month: "short" })}
+                    </span>
+                  ) : (
+                    <button onClick={() => marcarVisto(f.id)} className="ev-btn text-[11px] px-2 py-1" style={{ border: `1px solid ${T.border}` }}>
+                      Marcar como visto
+                    </button>
+                  )}
+                  {susPreguntas.length > 0 && (
+                    miResultado ? (
+                      <button onClick={() => setTestModal(f)} className="flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium" style={{ background: miResultado.calificacion >= 60 ? T.primarySoft : T.dangerSoft, color: miResultado.calificacion >= 60 ? T.primaryDark : T.danger }}>
+                        Tu nota: {miResultado.calificacion}%
+                      </button>
+                    ) : (
+                      <button onClick={() => setTestModal(f)} className="ev-btn text-[11px] px-2 py-1 text-white" style={{ background: T.primary }}>
+                        Presentar test
+                      </button>
+                    )
+                  )}
+                </div>
+
+                {isMaestro && (
+                  <div className="flex flex-wrap gap-1.5 mt-2 pt-2 border-t" style={{ borderColor: T.border }}>
+                    <button onClick={() => setGestionarTestModal(f)} className="ev-btn text-[11px] px-2 py-1" style={{ border: `1px solid ${T.border}` }}>
+                      Gestionar test ({susPreguntas.length})
+                    </button>
+                    <button onClick={() => setParticipacionModal(f)} className="ev-btn text-[11px] px-2 py-1" style={{ border: `1px solid ${T.border}` }}>
+                      Participación ({totalVistos} vistos · {totalTests} tests)
+                    </button>
+                    <button onClick={() => eliminarFormacion(f)} className="ev-btn text-[11px] px-2 py-1" style={{ background: T.dangerSoft, color: T.danger }}>
+                      <Trash2 size={11} /> Eliminar
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
-            <div className="p-3.5 flex flex-col gap-1.5 flex-1">
-              <span className="self-start px-2 py-0.5 rounded-full text-[10.5px] font-semibold" style={{ background: T.primarySoft, color: T.primaryDark }}>
-                {TIPO_FORMACION[f.tipo] || f.tipo}
-              </span>
-              <h4 className="font-semibold text-[13.5px]">{f.titulo}</h4>
-              {f.descripcion && <p className="text-[12px] line-clamp-3" style={{ color: T.muted }}>{f.descripcion}</p>}
-              <p className="text-[10.5px] mt-auto pt-1" style={{ color: T.muted }}>
-                {f.autor ? `${f.autor} · ` : ""}{new Date(f.createdAt).toLocaleDateString("es-CO", { day: "numeric", month: "short", year: "numeric" })}
-              </p>
-              {isMaestro && (
-                <button onClick={() => eliminarFormacion(f)} className="ev-btn text-[12px] px-2.5 py-1 mt-1 self-start" style={{ background: T.dangerSoft, color: T.danger }}>
-                  <Trash2 size={12} /> Eliminar
-                </button>
-              )}
-            </div>
-          </div>
-        ))}
+          );
+        })}
         {formacion.length === 0 && (
           <p className="text-[12.5px] col-span-full text-center py-10" style={{ color: T.muted }}>Todavía no hay contenido publicado.</p>
         )}
@@ -4179,6 +4345,178 @@ function FormacionModal({ ctx, onClose }) {
           >
             {subiendoArchivo ? "Subiendo…" : "Publicar"}
           </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TestModal({ ctx, onClose }) {
+  const { testModal: formacionItem, preguntas, enviarResultado, saving } = ctx;
+  const susPreguntas = preguntas.filter((p) => p.formacionId === formacionItem.id).sort((a, b) => a.orden - b.orden);
+  const [respuestas, setRespuestas] = useState({}); // preguntaId -> índice elegido
+  const [resultado, setResultado] = useState(null); // {correctas, total, calificacion}
+
+  async function enviar() {
+    let correctas = 0;
+    susPreguntas.forEach((p) => { if (respuestas[p.id] === p.respuestaCorrecta) correctas += 1; });
+    const calificacion = await enviarResultado(formacionItem.id, correctas, susPreguntas.length);
+    setResultado({ correctas, total: susPreguntas.length, calificacion });
+  }
+
+  const faltan = susPreguntas.some((p) => respuestas[p.id] === undefined);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="ev-card w-full max-w-lg p-5 max-h-[90vh] overflow-y-auto ev-scroll">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="ev-display font-semibold text-[16px]">Test — {formacionItem.titulo}</h3>
+          <button onClick={onClose}><X size={18} /></button>
+        </div>
+
+        {resultado ? (
+          <div className="text-center py-6">
+            <p className="ev-display text-[36px] font-bold" style={{ color: resultado.calificacion >= 60 ? T.primary : T.danger }}>{resultado.calificacion}%</p>
+            <p className="text-[13px] mt-1" style={{ color: T.muted }}>{resultado.correctas} de {resultado.total} correctas</p>
+            <button onClick={onClose} className="ev-btn px-4 py-2 text-[13px] text-white mt-5" style={{ background: T.primary }}>Cerrar</button>
+          </div>
+        ) : (
+          <>
+            <div className="flex flex-col gap-4">
+              {susPreguntas.map((p, i) => (
+                <div key={p.id}>
+                  <p className="text-[13px] font-semibold mb-2">{i + 1}. {p.pregunta}</p>
+                  <div className="flex flex-col gap-1.5">
+                    {p.opciones.map((op, idx) => (
+                      <label key={idx} className="flex items-center gap-2 text-[12.5px] rounded-lg px-2.5 py-1.5" style={{ border: `1px solid ${T.border}`, background: respuestas[p.id] === idx ? T.primarySoft : "transparent" }}>
+                        <input type="radio" name={`p-${p.id}`} checked={respuestas[p.id] === idx} onChange={() => setRespuestas((r) => ({ ...r, [p.id]: idx }))} />
+                        {op}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="flex justify-end gap-2 mt-5">
+              <button onClick={onClose} className="ev-btn px-4 py-2 text-[13px]" style={{ border: `1px solid ${T.border}` }}>Cancelar</button>
+              <button onClick={enviar} disabled={faltan || saving} className="ev-btn px-4 py-2 text-[13px] text-white disabled:opacity-40" style={{ background: T.primary }}>
+                {saving ? "Enviando…" : "Enviar test"}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function GestionarTestModal({ ctx, onClose }) {
+  const { gestionarTestModal: formacionItem, preguntas, guardarPregunta, eliminarPregunta, saving } = ctx;
+  const susPreguntas = preguntas.filter((p) => p.formacionId === formacionItem.id).sort((a, b) => a.orden - b.orden);
+  const [nueva, setNueva] = useState({ pregunta: "", opciones: ["", "", "", ""], respuestaCorrecta: 0 });
+
+  function setOpcion(i, val) {
+    setNueva((f) => { const op = [...f.opciones]; op[i] = val; return { ...f, opciones: op }; });
+  }
+  async function agregar() {
+    const opcionesLimpias = nueva.opciones.map((o) => o.trim()).filter(Boolean);
+    if (!nueva.pregunta.trim() || opcionesLimpias.length < 2) return;
+    await guardarPregunta({ formacionId: formacionItem.id, pregunta: nueva.pregunta, opciones: opcionesLimpias, respuestaCorrecta: nueva.respuestaCorrecta, orden: susPreguntas.length });
+    setNueva({ pregunta: "", opciones: ["", "", "", ""], respuestaCorrecta: 0 });
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="ev-card w-full max-w-lg p-5 max-h-[90vh] overflow-y-auto ev-scroll">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="ev-display font-semibold text-[16px]">Test de "{formacionItem.titulo}"</h3>
+          <button onClick={onClose}><X size={18} /></button>
+        </div>
+
+        <div className="flex flex-col gap-2 mb-4">
+          {susPreguntas.map((p, i) => (
+            <div key={p.id} className="rounded-lg p-2.5" style={{ border: `1px solid ${T.border}` }}>
+              <div className="flex items-start justify-between gap-2">
+                <p className="text-[12.5px] font-medium">{i + 1}. {p.pregunta}</p>
+                <button onClick={() => eliminarPregunta(p.id)} style={{ color: T.danger }}><Trash2 size={13} /></button>
+              </div>
+              <div className="mt-1 flex flex-col gap-0.5">
+                {p.opciones.map((op, idx) => (
+                  <p key={idx} className="text-[11.5px]" style={{ color: idx === p.respuestaCorrecta ? T.primaryDark : T.muted, fontWeight: idx === p.respuestaCorrecta ? 600 : 400 }}>
+                    {idx === p.respuestaCorrecta ? "✓ " : "— "}{op}
+                  </p>
+                ))}
+              </div>
+            </div>
+          ))}
+          {susPreguntas.length === 0 && <p className="text-[12.5px] text-center py-3" style={{ color: T.muted }}>Este contenido todavía no tiene preguntas.</p>}
+        </div>
+
+        <div className="rounded-lg p-3 flex flex-col gap-2" style={{ border: `1px solid ${T.border}`, background: T.base }}>
+          <p className="text-[12.5px] font-semibold">Nueva pregunta</p>
+          <input value={nueva.pregunta} onChange={(e) => setNueva((f) => ({ ...f, pregunta: e.target.value }))} placeholder="Escribe la pregunta…" style={inputStyle} />
+          {nueva.opciones.map((op, i) => (
+            <label key={i} className="flex items-center gap-2">
+              <input type="radio" checked={nueva.respuestaCorrecta === i} onChange={() => setNueva((f) => ({ ...f, respuestaCorrecta: i }))} />
+              <input value={op} onChange={(e) => setOpcion(i, e.target.value)} placeholder={`Opción ${i + 1}${i < 2 ? "" : " (opcional)"}`} style={inputStyle} />
+            </label>
+          ))}
+          <p className="text-[11px]" style={{ color: T.muted }}>Marca con el círculo cuál opción es la correcta.</p>
+          <button onClick={agregar} disabled={saving} className="ev-btn px-3.5 py-2 text-[12.5px] text-white self-start disabled:opacity-40" style={{ background: T.primary }}>
+            <Plus size={13} /> Agregar pregunta
+          </button>
+        </div>
+
+        <div className="flex justify-end mt-4">
+          <button onClick={onClose} className="ev-btn px-4 py-2 text-[13px]" style={{ border: `1px solid ${T.border}` }}>Cerrar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ParticipacionModal({ ctx, onClose }) {
+  const { participacionModal: formacionItem, vistos, resultados, usuariosLista } = ctx;
+  const susVistos = vistos.filter((v) => v.formacionId === formacionItem.id);
+  const susResultados = resultados.filter((r) => r.formacionId === formacionItem.id);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="ev-card w-full max-w-lg p-5 max-h-[90vh] overflow-y-auto ev-scroll">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="ev-display font-semibold text-[16px]">Participación — {formacionItem.titulo}</h3>
+          <button onClick={onClose}><X size={18} /></button>
+        </div>
+        <table className="w-full text-[12.5px]">
+          <thead>
+            <tr className="text-left" style={{ color: T.muted }}>
+              {["Correo", "Visto", "Test", "Calificación"].map((h) => (
+                <th key={h} className="py-2 font-medium text-[11px] uppercase tracking-wide">{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {usuariosLista.map((u) => {
+              const visto = susVistos.find((v) => v.usuarioId === u.id);
+              const resultado = susResultados.find((r) => r.usuarioId === u.id);
+              return (
+                <tr key={u.id} className="border-t" style={{ borderColor: T.border }}>
+                  <td className="py-2">{u.correo}</td>
+                  <td className="py-2">{visto ? new Date(visto.fecha).toLocaleDateString("es-CO", { day: "numeric", month: "short" }) : <span style={{ color: T.muted }}>—</span>}</td>
+                  <td className="py-2">{resultado ? "Sí" : <span style={{ color: T.muted }}>—</span>}</td>
+                  <td className="py-2 ev-mono" style={{ color: resultado ? (resultado.calificacion >= 60 ? T.primaryDark : T.danger) : T.muted }}>
+                    {resultado ? `${resultado.calificacion}%` : "—"}
+                  </td>
+                </tr>
+              );
+            })}
+            {usuariosLista.length === 0 && (
+              <tr><td colSpan={4} className="py-5 text-center" style={{ color: T.muted }}>No hay usuarios para mostrar.</td></tr>
+            )}
+          </tbody>
+        </table>
+        <div className="flex justify-end mt-4">
+          <button onClick={onClose} className="ev-btn px-4 py-2 text-[13px]" style={{ border: `1px solid ${T.border}` }}>Cerrar</button>
         </div>
       </div>
     </div>
