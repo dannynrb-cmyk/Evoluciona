@@ -927,14 +927,15 @@ export default function EvolucionaApp() {
     PERSONAL_STATE = personal;
   }, [personal]);
 
-  async function loadAll() {
+  async function loadAll(forzarServicioId) {
     setLoading(true);
     setLoadError(null);
     try {
       const listaServicios = await fetchServicios();
       setServicios(listaServicios);
-      const idAUsar = (servicioActualId && listaServicios.some((s) => s.id === servicioActualId))
-        ? servicioActualId
+      const preferido = forzarServicioId !== undefined ? forzarServicioId : servicioActualId;
+      const idAUsar = (preferido && listaServicios.some((s) => s.id === preferido))
+        ? preferido
         : listaServicios[0]?.id || null;
       setServicioActualId(idAUsar);
       SERVICIO_ACTUAL = idAUsar;
@@ -976,10 +977,8 @@ export default function EvolucionaApp() {
 
   async function cambiarServicio(id) {
     if (id === servicioActualId) { setServicioSelectorAbierto(false); return; }
-    setServicioActualId(id);
-    SERVICIO_ACTUAL = id;
     setServicioSelectorAbierto(false);
-    await loadAll();
+    await loadAll(id);
   }
   async function crearServicio(nombre) {
     setSaving(true);
