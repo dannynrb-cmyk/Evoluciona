@@ -28,6 +28,8 @@ import {
   Copy,
   Megaphone,
   GraduationCap,
+  Building2,
+  ChevronDown,
 } from "lucide-react";
 import {
   BarChart,
@@ -115,6 +117,118 @@ function ThemeToggle({ theme, setTheme, compact }) {
     </button>
   );
 }
+
+function ServicioSelector({ ctx }) {
+  const { servicios, servicioActualId, cambiarServicio, servicioSelectorAbierto, setServicioSelectorAbierto, isMaestro, setServicioModal } = ctx;
+  const actual = servicios.find((s) => s.id === servicioActualId);
+  if (servicios.length === 0) return null;
+  return (
+    <div className="relative shrink-0">
+      <button
+        onClick={() => setServicioSelectorAbierto((v) => !v)}
+        className="ev-btn flex items-center gap-1.5 px-2.5 py-1.5 text-[12.5px] font-medium"
+        style={{ border: `1px solid ${T.border}`, color: T.ink }}
+      >
+        <Building2 size={13} style={{ color: T.primary }} />
+        <span className="max-w-[140px] truncate">{actual?.nombre || "Servicio"}</span>
+        <ChevronDown size={13} style={{ color: T.muted }} />
+      </button>
+      {servicioSelectorAbierto && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setServicioSelectorAbierto(false)} />
+          <div className="absolute left-0 top-full mt-1.5 z-50 w-64 ev-card p-1.5" style={{ background: T.surface }}>
+            {servicios.map((s) => (
+              <button
+                key={s.id}
+                onClick={() => cambiarServicio(s.id)}
+                className="w-full text-left px-3 py-2 rounded-lg text-[13px] flex items-center justify-between"
+                style={{ background: s.id === servicioActualId ? T.primarySoft : "transparent", color: s.id === servicioActualId ? T.primaryDark : T.ink }}
+              >
+                {s.nombre}
+                {s.id === servicioActualId && <CheckCircle2 size={14} />}
+              </button>
+            ))}
+            {isMaestro && (
+              <button
+                onClick={() => { setServicioSelectorAbierto(false); setServicioModal(true); }}
+                className="w-full text-left px-3 py-2 rounded-lg text-[13px] font-medium mt-1 border-t pt-2.5"
+                style={{ color: T.primary, borderColor: T.border }}
+              >
+                <Plus size={13} className="inline -mt-0.5 mr-1" /> Nuevo servicio
+              </button>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function ServicioModal({ ctx, onClose }) {
+  const { servicios, servicioActualId, crearServicio, renombrarServicio, saving } = ctx;
+  const actual = servicios.find((s) => s.id === servicioActualId);
+  const [modo, setModo] = useState("crear"); // 'crear' | 'renombrar'
+  const [nombre, setNombre] = useState("");
+  const [renombrando, setRenombrando] = useState(actual?.nombre || "");
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="ev-card w-full max-w-sm p-5">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="ev-display font-semibold text-[16px]">Servicios</h3>
+          <button onClick={onClose}><X size={18} /></button>
+        </div>
+        <div className="flex items-center gap-1 p-1 rounded-lg mb-4" style={{ background: T.base, border: `1px solid ${T.border}` }}>
+          {[["crear", "Nuevo servicio"], ["renombrar", `Renombrar "${actual?.nombre || ""}"`]].map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => setModo(key)}
+              className="ev-btn flex-1 justify-center px-2 py-1.5 text-[12px]"
+              style={{ background: modo === key ? T.primary : "transparent", color: modo === key ? "#fff" : T.ink }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {modo === "crear" ? (
+          <>
+            <Field label="Nombre del nuevo servicio">
+              <input value={nombre} onChange={(e) => setNombre(e.target.value)} placeholder="Ej. Hospitalización" style={inputStyle} />
+            </Field>
+            <p className="text-[11.5px] mt-2" style={{ color: T.muted }}>
+              Empieza sin personal ni turnos — con sus propias reglas configurables (horas, mínimos de personal) desde cero.
+            </p>
+            <div className="flex justify-end gap-2 mt-5">
+              <button onClick={onClose} className="ev-btn px-4 py-2 text-[13px]" style={{ border: `1px solid ${T.border}` }}>Cancelar</button>
+              <button onClick={() => crearServicio(nombre)} disabled={!nombre || saving} className="ev-btn px-4 py-2 text-[13px] text-white disabled:opacity-40" style={{ background: T.primary }}>
+                {saving ? "Creando…" : "Crear servicio"}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <Field label="Nuevo nombre">
+              <input value={renombrando} onChange={(e) => setRenombrando(e.target.value)} style={inputStyle} />
+            </Field>
+            <div className="flex justify-end gap-2 mt-5">
+              <button onClick={onClose} className="ev-btn px-4 py-2 text-[13px]" style={{ border: `1px solid ${T.border}` }}>Cancelar</button>
+              <button
+                onClick={() => { renombrarServicio(servicioActualId, renombrando); onClose(); }}
+                disabled={!renombrando || saving}
+                className="ev-btn px-4 py-2 text-[13px] text-white disabled:opacity-40"
+                style={{ background: T.primary }}
+              >
+                Guardar
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 const APP_BASE_CSS = `
   @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
   .ev-mono { font-family:'JetBrains Mono', monospace; }
@@ -149,6 +263,7 @@ let ACCESS_TOKEN = null; // token de sesión de Supabase Auth; null = sin inicia
 let REFRESH_TOKEN = null; // se usa para renovar ACCESS_TOKEN sin pedir contraseña de nuevo
 let onSesionExpirada = () => {}; // la app raíz la reemplaza para cerrar sesión si el refresh también falla
 let refrescoEnCurso = null; // evita refrescar varias veces en paralelo
+let SERVICIO_ACTUAL = null; // id del servicio seleccionado; lo usan los inserts para etiquetar los datos nuevos
 
 async function refrescarSesion() {
   if (!REFRESH_TOKEN) throw new Error("Sin token de refresco");
@@ -251,7 +366,7 @@ async function fetchTemas() {
   return rows.map(mapTema);
 }
 async function insertTemaRemote(nombre) {
-  const [row] = await sb("temas_biblioteca", { method: "POST", body: JSON.stringify({ nombre }) });
+  const [row] = await sb("temas_biblioteca", { method: "POST", body: JSON.stringify({ nombre, servicio_id: SERVICIO_ACTUAL }) });
   return mapTema(row);
 }
 async function deleteTemaRemote(id) {
@@ -351,20 +466,37 @@ function mapUsuario(row) {
   return { id: row.id, nombre: row.nombre, correo: row.correo, rol: row.rol, activo: row.activo !== false };
 }
 
-async function fetchAllRemote() {
+function mapServicio(row) {
+  return { id: row.id, nombre: row.nombre };
+}
+async function fetchServicios() {
+  const rows = await sb("servicios?select=*&order=created_at");
+  return rows.map(mapServicio);
+}
+async function insertServicioRemote(nombre) {
+  const [row] = await sb("servicios", { method: "POST", body: JSON.stringify({ nombre }) });
+  return mapServicio(row);
+}
+async function renombrarServicioRemote(id, nombre) {
+  const [row] = await sb(`servicios?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ nombre }) });
+  return mapServicio(row);
+}
+
+async function fetchAllRemote(servicioId) {
+  const s = `servicio_id=eq.${servicioId}`;
   const [personalRows, actRows, turnRows, bibRows, reglasRow, festivoRows, novedadRows, reglaPersonalRows, plantillaRows, plantillaItemRows, avisoRows, temaRows, formacionRows, vistoRows, preguntaRows, resultadoRows] = await Promise.all([
-    sb("personal?select=*&order=nombre"),
-    sb("actividades?select=*"),
-    sb("turnos?select=*"),
-    sb("biblioteca_actividades?select=*&order=nombre"),
-    sb("reglas_turnos?select=*&limit=1"),
+    sb(`personal?${s}&select=*&order=nombre`),
+    sb(`actividades?${s}&select=*`),
+    sb(`turnos?${s}&select=*`),
+    sb(`biblioteca_actividades?${s}&select=*&order=nombre`),
+    sb(`reglas_turnos?${s}&select=*&limit=1`),
     sb("festivos?select=*&order=fecha"),
-    sb("novedades?select=*&order=fecha_inicio.desc"),
-    sb("reglas_personal?select=*"),
-    sb("plantillas_semanales?select=*&order=nombre"),
+    sb(`novedades?${s}&select=*&order=fecha_inicio.desc`),
+    sb(`reglas_personal?${s}&select=*`),
+    sb(`plantillas_semanales?${s}&select=*&order=nombre`),
     sb("plantilla_actividades?select=*"),
     sb("avisos_tablero?select=*&order=created_at.desc"),
-    sb("temas_biblioteca?select=*&order=nombre"),
+    sb(`temas_biblioteca?${s}&select=*&order=nombre`),
     sb("formacion_continua?select=*&order=created_at.desc"),
     sb("formacion_vistos?select=*"),
     sb("formacion_preguntas?select=*&order=orden"),
@@ -388,15 +520,16 @@ async function fetchAllRemote() {
     resultados: resultadoRows.map(mapResultado),
   };
 }
-async function fetchEventsRemote() {
-  const [actRows, turnRows] = await Promise.all([sb("actividades?select=*"), sb("turnos?select=*")]);
+async function fetchEventsRemote(servicioId) {
+  const s = `servicio_id=eq.${servicioId}`;
+  const [actRows, turnRows] = await Promise.all([sb(`actividades?${s}&select=*`), sb(`turnos?${s}&select=*`)]);
   return [...actRows.map(mapActividad), ...turnRows.map(mapTurno)];
 }
 function eventPayload(form) {
   const isTurno = form.type === "turno_dia" || form.type === "turno_noche";
   return isTurno
-    ? { fecha: form.date, tipo_turno: form.type === "turno_dia" ? "dia" : "noche", hora_inicio: form.start, hora_fin: form.end, personal_id: form.personalId || null }
-    : { nombre: form.title, tipo: form.type, fecha: form.date, hora_inicio: form.start, hora_fin: form.end, responsable_id: form.personalId || null, metodologia: form.metodologia || null, objetivos: form.objetivos || null };
+    ? { fecha: form.date, tipo_turno: form.type === "turno_dia" ? "dia" : "noche", hora_inicio: form.start, hora_fin: form.end, personal_id: form.personalId || null, servicio_id: SERVICIO_ACTUAL }
+    : { nombre: form.title, tipo: form.type, fecha: form.date, hora_inicio: form.start, hora_fin: form.end, responsable_id: form.personalId || null, metodologia: form.metodologia || null, objetivos: form.objetivos || null, servicio_id: SERVICIO_ACTUAL };
 }
 async function insertEventRemote(form) {
   const isTurno = form.type === "turno_dia" || form.type === "turno_noche";
@@ -425,6 +558,7 @@ function personalPayload(form) {
     horas_semana: Number(form.horas) || 0,
     disponibilidad: form.disponibilidad || "Completa",
     estado: form.estado || "activo",
+    servicio_id: SERVICIO_ACTUAL,
   };
 }
 async function insertPersonalRemote(form) {
@@ -439,7 +573,7 @@ async function deletePersonalRemote(id) {
   await sb(`personal?id=eq.${id}`, { method: "DELETE", prefer: "return=minimal" });
 }
 async function insertBibliotecaRemote(form) {
-  const [row] = await sb("biblioteca_actividades", { method: "POST", body: JSON.stringify({ nombre: form.nombre, tipo: form.tipo, metodologia: form.metodologia || null, objetivos: form.objetivos || null, tema_id: form.temaId || null }) });
+  const [row] = await sb("biblioteca_actividades", { method: "POST", body: JSON.stringify({ nombre: form.nombre, tipo: form.tipo, metodologia: form.metodologia || null, objetivos: form.objetivos || null, tema_id: form.temaId || null, servicio_id: SERVICIO_ACTUAL }) });
   return mapBiblioteca(row);
 }
 async function updateBibliotecaRemote(form) {
@@ -510,6 +644,13 @@ async function updateReglasRemote(form) {
   const [row] = await sb(`reglas_turnos?id=eq.${form.id}`, { method: "PATCH", body: JSON.stringify(body) });
   return mapReglas(row);
 }
+async function insertReglasDefaultRemote(servicioId) {
+  // Se apoya en los valores por defecto ya definidos en la base de datos
+  // (44h, mínimos de personal, cargos, etc.) — solo etiqueta la fila con el
+  // servicio nuevo.
+  const [row] = await sb("reglas_turnos", { method: "POST", body: JSON.stringify({ servicio_id: servicioId }) });
+  return mapReglas(row);
+}
 function mapFestivo(row) {
   return { id: row.id, fecha: row.fecha, nombre: row.nombre };
 }
@@ -533,7 +674,7 @@ async function fetchNovedades() {
   return rows.map(mapNovedad);
 }
 async function insertNovedadRemote(form) {
-  const [row] = await sb("novedades", { method: "POST", body: JSON.stringify({ personal_id: form.personalId, fecha_inicio: form.fechaInicio, fecha_fin: form.fechaFin, tipo: form.tipo, motivo: form.motivo || null }) });
+  const [row] = await sb("novedades", { method: "POST", body: JSON.stringify({ personal_id: form.personalId, fecha_inicio: form.fechaInicio, fecha_fin: form.fechaFin, tipo: form.tipo, motivo: form.motivo || null, servicio_id: SERVICIO_ACTUAL }) });
   return mapNovedad(row);
 }
 async function deleteNovedadRemote(id) {
@@ -548,7 +689,7 @@ async function fetchReglasPersonal() {
   return rows.map(mapReglaPersonal);
 }
 async function insertReglaPersonalRemote(form) {
-  const [row] = await sb("reglas_personal", { method: "POST", body: JSON.stringify({ personal_id: form.personalId, dia_semana: Number(form.diaSemana), tipo_turno: form.tipoTurno === "turno_dia" ? "dia" : "noche", tipo_regla: form.tipoRegla || "siempre" }) });
+  const [row] = await sb("reglas_personal", { method: "POST", body: JSON.stringify({ personal_id: form.personalId, dia_semana: Number(form.diaSemana), tipo_turno: form.tipoTurno === "turno_dia" ? "dia" : "noche", tipo_regla: form.tipoRegla || "siempre", servicio_id: SERVICIO_ACTUAL }) });
   return mapReglaPersonal(row);
 }
 async function deleteReglaPersonalRemote(id) {
@@ -563,7 +704,7 @@ async function fetchPlantillas() {
   return rows.map(mapPlantilla);
 }
 async function insertPlantillaRemote(nombre) {
-  const [row] = await sb("plantillas_semanales", { method: "POST", body: JSON.stringify({ nombre }) });
+  const [row] = await sb("plantillas_semanales", { method: "POST", body: JSON.stringify({ nombre, servicio_id: SERVICIO_ACTUAL }) });
   return mapPlantilla(row);
 }
 async function deletePlantillaRemote(id) {
@@ -719,6 +860,11 @@ function useToast() {
 export default function EvolucionaApp() {
   const [theme, setTheme] = useTheme();
   const [session, setSession] = useState(null); // { email, rol }
+  const [servicios, setServicios] = useState([]);
+  const [servicioActualId, setServicioActualId] = useState(null);
+  const [servicioModal, setServicioModal] = useState(false);
+  const [servicioSelectorAbierto, setServicioSelectorAbierto] = useState(false);
+  React.useEffect(() => { SERVICIO_ACTUAL = servicioActualId; }, [servicioActualId]);
   const [recoveryToken, setRecoveryToken] = useState(undefined); // undefined = aún sin revisar; null = no hay; string = token de recuperación
   React.useEffect(() => {
     try {
@@ -785,7 +931,25 @@ export default function EvolucionaApp() {
     setLoading(true);
     setLoadError(null);
     try {
-      const data = await fetchAllRemote();
+      const listaServicios = await fetchServicios();
+      setServicios(listaServicios);
+      const idAUsar = (servicioActualId && listaServicios.some((s) => s.id === servicioActualId))
+        ? servicioActualId
+        : listaServicios[0]?.id || null;
+      setServicioActualId(idAUsar);
+      SERVICIO_ACTUAL = idAUsar;
+
+      if (!idAUsar) {
+        // No hay ningún servicio todavía (no debería pasar si corriste la migración,
+        // pero por si acaso no dejamos la app en blanco sin explicación).
+        setPersonal([]); setEvents([]); setBiblioteca([]); setReglas(null); setFestivos([]);
+        setNovedades([]); setReglasPersonal([]); setPlantillas([]); setPlantillaItems([]);
+        setAvisos([]); setTemas([]); setFormacion([]); setVistos([]); setPreguntas([]); setResultados([]);
+        setLoading(false);
+        return;
+      }
+
+      const data = await fetchAllRemote(idAUsar);
       setPersonal(data.personal);
       setEvents(data.events);
       setBiblioteca(data.biblioteca);
@@ -809,6 +973,38 @@ export default function EvolucionaApp() {
     }
   }
   React.useEffect(() => { if (session) loadAll(); }, [session]);
+
+  async function cambiarServicio(id) {
+    if (id === servicioActualId) { setServicioSelectorAbierto(false); return; }
+    setServicioActualId(id);
+    SERVICIO_ACTUAL = id;
+    setServicioSelectorAbierto(false);
+    await loadAll();
+  }
+  async function crearServicio(nombre) {
+    setSaving(true);
+    try {
+      const nuevo = await insertServicioRemote(nombre);
+      await insertReglasDefaultRemote(nuevo.id);
+      setServicios((prev) => [...prev, nuevo]);
+      setServicioModal(false);
+      showToast(`Servicio "${nombre}" creado`);
+      await cambiarServicio(nuevo.id);
+    } catch (err) {
+      showToast(`No se pudo crear: ${err.message}`, "warn");
+    } finally {
+      setSaving(false);
+    }
+  }
+  async function renombrarServicio(id, nombre) {
+    try {
+      const actualizado = await renombrarServicioRemote(id, nombre);
+      setServicios((prev) => prev.map((s) => (s.id === id ? actualizado : s)));
+      showToast("Servicio renombrado");
+    } catch (err) {
+      showToast(`No se pudo renombrar: ${err.message}`, "warn");
+    }
+  }
 
   // Si el refresco del token llega a fallar (ej. la sesión fue revocada),
   // cerramos sesión localmente para que la persona vuelva a entrar.
@@ -877,7 +1073,7 @@ export default function EvolucionaApp() {
       } else {
         await insertEventRemote(form);
       }
-      setEvents(await fetchEventsRemote());
+      setEvents(await fetchEventsRemote(SERVICIO_ACTUAL));
       setModal(null);
       showToast(modal?.mode === "edit" ? "Actualizado en Supabase" : "Guardado en Supabase");
     } catch (err) {
@@ -911,7 +1107,7 @@ export default function EvolucionaApp() {
       showToast(`${aBorrar.length} turno(s) eliminado(s)`, "warn");
     } catch (err) {
       showToast(`No se pudo borrar todo: ${err.message}`, "warn");
-      setEvents(await fetchEventsRemote());
+      setEvents(await fetchEventsRemote(SERVICIO_ACTUAL));
     } finally {
       setSaving(false);
     }
@@ -1016,11 +1212,11 @@ export default function EvolucionaApp() {
       for (const p of propuestas) {
         await insertEventRemote(p);
       }
-      setEvents(await fetchEventsRemote());
+      setEvents(await fetchEventsRemote(SERVICIO_ACTUAL));
       showToast(`${propuestas.length} turno(s) guardado(s) en Supabase`);
     } catch (err) {
       showToast(`Se guardó parcialmente: ${err.message}`, "warn");
-      setEvents(await fetchEventsRemote());
+      setEvents(await fetchEventsRemote(SERVICIO_ACTUAL));
     } finally {
       setSaving(false);
     }
@@ -1124,7 +1320,7 @@ export default function EvolucionaApp() {
           personalId: it.responsableId || "", metodologia: it.metodologia, objetivos: it.objetivos,
         });
       }
-      setEvents(await fetchEventsRemote());
+      setEvents(await fetchEventsRemote(SERVICIO_ACTUAL));
       setAplicarPlantillaModal(null);
       showToast(`${items.length} actividad(es) creada(s) para esa semana`);
     } catch (err) {
@@ -1276,7 +1472,7 @@ export default function EvolucionaApp() {
     setSaving(true);
     try {
       await updateEventRemote({ ...turno, personalId: nuevoPersonalId });
-      setEvents(await fetchEventsRemote());
+      setEvents(await fetchEventsRemote(SERVICIO_ACTUAL));
       showToast("Reemplazo confirmado");
     } catch (err) {
       showToast(`No se pudo reemplazar: ${err.message}`, "warn");
@@ -1289,6 +1485,8 @@ export default function EvolucionaApp() {
     events, setEvents, personal, setPersonal, biblioteca, weekStart, weekDays, weekOffset, setWeekOffset,
     calMode, setCalMode, monthOffset, setMonthOffset, setModal, detail, setDetail, deleteEvent,
     toggleEstado, showToast, setView, saving, isMaestro, session, eliminarTurnosDeFechas,
+    servicios, servicioActualId, servicioModal, setServicioModal, servicioSelectorAbierto, setServicioSelectorAbierto,
+    cambiarServicio, crearServicio, renombrarServicio,
     personalModal, setPersonalModal, savePersonal, deletePersonal,
     bibModal, setBibModal, saveBiblioteca, deleteBiblioteca,
     reglas, saveReglas, festivos, addFestivo, deleteFestivo, festivoModal, setFestivoModal,
@@ -1412,6 +1610,7 @@ export default function EvolucionaApp() {
               <CalendarDays size={16} />
             </button>
             <h1 className="ev-display text-[20px] font-semibold capitalize truncate">{view}</h1>
+            <ServicioSelector ctx={ctx} />
           </div>
           <div className="flex items-center gap-3 shrink-0">
             <span
@@ -1452,6 +1651,7 @@ export default function EvolucionaApp() {
       {bibModal && <BibliotecaModal ctx={ctx} onClose={() => setBibModal(null)} initial={bibModal} />}
       {plantillaModal && <NuevaPlantillaModal ctx={ctx} onClose={() => setPlantillaModal(false)} />}
       {temaModal && <TemaModal ctx={ctx} onClose={() => setTemaModal(false)} />}
+      {servicioModal && <ServicioModal ctx={ctx} onClose={() => setServicioModal(false)} />}
       {formacionModal && <FormacionModal ctx={ctx} onClose={() => setFormacionModal(false)} />}
       {testModal && <TestModal ctx={ctx} onClose={() => setTestModal(null)} />}
       {gestionarTestModal && <GestionarTestModal ctx={ctx} onClose={() => setGestionarTestModal(null)} />}
