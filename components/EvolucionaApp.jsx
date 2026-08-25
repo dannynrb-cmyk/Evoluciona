@@ -2409,7 +2409,7 @@ function TurnosMesGrid({ ctx, filtroPersonalId }) {
                 const festivoNombre = festivoSet.has(dISO) ? festivos.find((f) => f.fecha === dISO)?.nombre : null;
                 const hayTurnos = dia.length > 0 || noche.length > 0;
                 const { ausencias, capacitaciones, extra, NOMBRES_NOVEDAD } = novedadesDelDia(dISO, dia, noche);
-                const hayNovedad = ausencias.length > 0 || capacitaciones.length > 0 || extra > 0;
+                const hayNovedad = ausencias.length > 0 || capacitaciones.length > 0;
                 return (
                   <div
                     key={i}
@@ -2450,19 +2450,10 @@ function TurnosMesGrid({ ctx, filtroPersonalId }) {
                             <BookOpen size={9} className="shrink-0" /> <span className="truncate">Capacitación{c.personalId ? `: ${personName(c.personalId)}` : ""}</span>
                           </span>
                         ))}
-                        {extra > 0 && (
-                          <span
-                            title={`Cubre la ausencia de ${ausencias.map((a) => personName(a.personalId)).join(", ")}`}
-                            className="flex items-center gap-0.5 px-1 py-0.5 rounded text-[9px] font-medium max-w-full truncate"
-                            style={{ background: T.accentSoft, color: T.accentInk }}
-                          >
-                            <Plus size={9} className="shrink-0" /> <span className="truncate">Extra por ausencia de {ausencias.map((a) => personName(a.personalId)).join(", ")}</span>
-                          </span>
-                        )}
                       </div>
                     )}
-                    <TurnoMiniBox tipo="turno_dia" chips={dia} onChipClick={setDetail} min={filtroPersonalId ? undefined : minRequeridoTurno(dISO, "turno_dia", reglas, festivoSet)} reglas={filtroPersonalId ? null : reglas} />
-                    <TurnoMiniBox tipo="turno_noche" chips={noche} onChipClick={setDetail} min={filtroPersonalId ? undefined : minRequeridoTurno(dISO, "turno_noche", reglas, festivoSet)} reglas={filtroPersonalId ? null : reglas} />
+                    <TurnoMiniBox tipo="turno_dia" chips={dia} onChipClick={setDetail} min={filtroPersonalId ? undefined : minRequeridoTurno(dISO, "turno_dia", reglas, festivoSet)} reglas={filtroPersonalId ? null : reglas} marcarExtra={ausencias.length > 0} />
+                    <TurnoMiniBox tipo="turno_noche" chips={noche} onChipClick={setDetail} min={filtroPersonalId ? undefined : minRequeridoTurno(dISO, "turno_noche", reglas, festivoSet)} reglas={filtroPersonalId ? null : reglas} marcarExtra={ausencias.length > 0} />
                   </div>
                 );
               })}
@@ -2703,7 +2694,7 @@ function TurnosCalendario({ ctx }) {
   );
 }
 
-function TurnoMiniBox({ tipo, chips, onChipClick, min, reglas }) {
+function TurnoMiniBox({ tipo, chips, onChipClick, min, reglas, marcarExtra }) {
   const color = ACTIVITY_TYPES[tipo].color;
   const falta = typeof min === "number" && chips.length < min;
   const personasDelTurno = chips.map((c) => personById(c.personalId)).filter(Boolean);
@@ -2717,17 +2708,22 @@ function TurnoMiniBox({ tipo, chips, onChipClick, min, reglas }) {
         {(falta || sinAcompanamiento) && <AlertTriangle size={10} style={{ color: T.danger }} />}
       </p>
       {chips.length === 0 && <p className="text-[11px]" style={{ color: T.muted }}>—</p>}
-      {chips.map((c) => (
-        <button
-          key={c.id}
-          onClick={(ev) => { ev.stopPropagation(); onChipClick(c); }}
-          className="block w-full text-left leading-snug truncate hover:underline"
-          style={{ color: T.ink }}
-          title={`${personName(c.personalId)} · ${fmtRange(c.start, c.end)} · ${horasEfectivas(c)}h`}
-        >
-          <span className="text-[13px] font-semibold">{personName(c.personalId)}</span> <span className="ev-mono text-[11px]" style={{ color: T.muted }}>{horasEfectivas(c)}h</span>
-        </button>
-      ))}
+      {chips.map((c, idx) => {
+        const esExtra = marcarExtra && typeof min === "number" && idx >= min;
+        return (
+          <button
+            key={c.id}
+            onClick={(ev) => { ev.stopPropagation(); onChipClick(c); }}
+            className="block w-full text-left leading-snug truncate hover:underline"
+            style={{ color: T.ink }}
+            title={`${personName(c.personalId)} · ${fmtRange(c.start, c.end)} · ${horasEfectivas(c)}h${esExtra ? " · Turno extra por ausencia" : ""}`}
+          >
+            <span className="text-[13px] font-semibold">{personName(c.personalId)}</span>{" "}
+            {esExtra && <span className="text-[10px] font-bold" style={{ color: T.danger }}>+E</span>}{" "}
+            <span className="ev-mono text-[11px]" style={{ color: T.muted }}>{horasEfectivas(c)}h</span>
+          </button>
+        );
+      })}
       {falta && <p className="text-[10px] font-medium" style={{ color: T.danger }}>Faltan {min - chips.length}</p>}
       {!falta && sinAcompanamiento && <p className="text-[10px] font-medium" style={{ color: T.danger }}>Sin auxiliar</p>}
     </div>
