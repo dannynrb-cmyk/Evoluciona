@@ -1901,7 +1901,7 @@ function calcularAlertasDashboard(events, personal, reglas) {
       const horas = events
         .filter((e) => TURNO_TYPES.includes(e.type) && e.personalId === p.id && semanaISO.includes(e.date))
         .reduce((a, e) => a + horasEfectivas(e), 0);
-      const limite = reglas?.horasSemanaObjetivo ?? p.horas;
+      const limite = p.horas || reglas?.horasSemanaObjetivo || 44;
       if (horas > limite) {
         alerts.push({ level: "warn", text: `${p.nombre} supera las ${limite} horas semanales asignadas (${horas}h)` });
       }
@@ -2240,7 +2240,7 @@ function generarPropuestaTurnos({ personal, eventosExistentes, reglas, festivos,
             faltantes.push({ date: dISO, type: tipo, faltan: 0, motivo: `regla fija de ${persona.nombre} no aplicada (venía de turno noche)` });
             return;
           }
-          if (conteo[persona.id].horas + horasEfectivas({ type: tipo, start, end }) > reglas.horasSemanaObjetivo) {
+          if (conteo[persona.id].horas + horasEfectivas({ type: tipo, start, end }) > (persona.horas || reglas.horasSemanaObjetivo)) {
             faltantes.push({ date: dISO, type: tipo, faltan: 0, motivo: `regla fija de ${persona.nombre} no aplicada (supera las horas semanales)` });
             return;
           }
@@ -2257,7 +2257,7 @@ function generarPropuestaTurnos({ personal, eventosExistentes, reglas, festivos,
           .filter((p) => !estaAusente(p.id, dISO, novedades)) // sin novedad activa ese día
           .filter((p) => !(asignadoHoy[dISO]?.has(p.id))) // no dos turnos el mismo día
           .filter((p) => !(tipo === "turno_dia" && nocheAyer[diaAnteriorISO]?.has(p.id))) // descanso tras turno noche
-          .filter((p) => conteo[p.id].horas + horasEfectivas({ type: tipo, start, end }) <= reglas.horasSemanaObjetivo)
+          .filter((p) => conteo[p.id].horas + horasEfectivas({ type: tipo, start, end }) <= (p.horas || reglas.horasSemanaObjetivo))
           .sort((a, b) => {
             const ca = conteo[a.id], cb = conteo[b.id];
             if (ca[tipo] !== cb[tipo]) return ca[tipo] - cb[tipo];
@@ -2319,7 +2319,7 @@ function sugerirReemplazo({ turno, personal, eventosExistentes, reglas, novedade
     .filter((p) => !estaAusente(p.id, turno.date, novedades))
     .filter((p) => !ocupadosEseDia.has(p.id))
     .filter((p) => !(turno.type === "turno_dia" && nocheAyerSet.has(p.id)))
-    .filter((p) => conteo[p.id].horas + horasEfectivas(turno) <= (reglas?.horasSemanaObjetivo ?? 44))
+    .filter((p) => conteo[p.id].horas + horasEfectivas(turno) <= (p.horas || reglas?.horasSemanaObjetivo || 44))
     .sort((a, b) => {
       const mismoRolA = original ? (esOperador(a.cargo, reglas) === esOperador(original.cargo, reglas) ? 0 : 1) : 0;
       const mismoRolB = original ? (esOperador(b.cargo, reglas) === esOperador(original.cargo, reglas) ? 0 : 1) : 0;
@@ -2636,7 +2636,7 @@ function TurnosCalendario({ ctx }) {
                 <tr key={p.id} className="border-t" style={{ borderColor: T.border }}>
                   <td className="px-4 py-2 font-medium">{p.nombre}</td>
                   {p.porSemana.map((h, i) => {
-                    const over = reglas && h > reglas.horasSemanaObjetivo;
+                    const over = h > (p.horas || reglas?.horasSemanaObjetivo || 44);
                     return (
                       <td key={i} className="px-3 py-2 text-right ev-mono" style={{ color: over ? T.danger : T.muted }}>
                         {h}h
@@ -3364,7 +3364,7 @@ function Configuracion({ ctx }) {
         <h3 className="ev-display font-semibold text-[15px] mb-1">Reglas obligatorias</h3>
         <p className="text-[12px] mb-4" style={{ color: T.muted }}>Nunca se pueden incumplir al programar turnos.</p>
         <div className="grid sm:grid-cols-2 gap-3.5">
-          {numField("horasSemanaObjetivo", "Horas máximas por semana")}
+          {numField("horasSemanaObjetivo", "Horas máx. por semana (respaldo, si alguien no tiene horas puestas en Personal)")}
           {numField("descansoMinHoras", "Descanso mínimo entre turnos (h)")}
           {numField("personalMinTurnoDia", "Personas mínimas · turno día")}
           {numField("personalMinTurnoNoche", "Personas mínimas · turno noche")}
