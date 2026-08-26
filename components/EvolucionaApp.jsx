@@ -2207,13 +2207,23 @@ function generarPropuestaTurnos({ personal, eventosExistentes, reglas, festivos,
       // han tenido su fin de semana libre este mes.
       if (diaIdx === 5 && (reglas.finesSemanaLibresMes || 0) > 0) {
         const mesKey = `${d.getFullYear()}-${d.getMonth()}`;
-        const candidatosDescanso = elegiblesSemana.filter((p) => !descansoAsignadoMes[`${p.id}|${mesKey}`]);
-        if (candidatosDescanso.length > 0) {
+        const domingoISO = toISO(diasSemana[6]);
+        // No fuerces el descanso de nadie si el fin de semana ya está corto de
+        // personal por vacaciones/incapacidades: primero se cubre el mínimo.
+        const ausentesEsteFin = new Set(
+          elegibles.filter((p) => estaAusente(p.id, dISO, novedades) || estaAusente(p.id, domingoISO, novedades)).map((p) => p.id)
+        );
+        const disponiblesEsteFin = elegibles.length - ausentesEsteFin.size;
+        const margenMinimo = (reglas.personalMinFinSemanaFestivo || 2) + 1; // deja al menos 1 de colchón
+        const candidatosDescanso = elegiblesSemana.filter((p) => !ausentesEsteFin.has(p.id) && !descansoAsignadoMes[`${p.id}|${mesKey}`]);
+        // Si ya hay alguien de baja ese fin de semana (vacaciones/incapacidad), no se
+        // suma un segundo ausente "por preferencia": primero se cubre el mínimo.
+        if (ausentesEsteFin.size === 0 && disponiblesEsteFin > margenMinimo && candidatosDescanso.length > 0) {
           candidatosDescanso.sort((a, b) => (conteo[b.id]?.horas || 0) - (conteo[a.id]?.horas || 0));
           const elegido = candidatosDescanso[0];
           descansoAsignadoMes[`${elegido.id}|${mesKey}`] = true;
           descansoFinDeSemana[dISO] = elegido.id;
-          descansoFinDeSemana[toISO(diasSemana[6])] = elegido.id;
+          descansoFinDeSemana[domingoISO] = elegido.id;
         }
       }
       ["turno_dia", "turno_noche"].forEach((tipo) => {
@@ -2272,7 +2282,22 @@ function generarPropuestaTurnos({ personal, eventosExistentes, reglas, festivos,
           if (hayOperador && !hayAuxiliar) {
             const refuerzo = candidatos.find((p) => esAuxiliar(p.cargo, reglas) && !elegidos.includes(p));
             if (refuerzo) {
-              elegidos = [...elegidos, refuerzo];
+              if (elegidos.length < requerido) {
+                // Hay cupo libre (aún no se llegó al mínimo): se suma sin pasarse.
+                elegidos = [...elegidos, refuerzo];
+              } else {
+                // Ya está completo: se reemplaza a quien no sea una asignación fija,
+                // para no terminar con más personas de las que en realidad hacen falta.
+                const noFijos = elegidos.filter((p) => !fijos.some((f) => f.id === p.id));
+                if (noFijos.length > 0) {
+                  const aQuitar = noFijos[noFijos.length - 1];
+                  elegidos = [...elegidos.filter((p) => p.id !== aQuitar.id), refuerzo];
+                } else {
+                  // Todos los asignados son fijos ("siempre"); se agrega el auxiliar
+                  // aunque implique un cupo extra, para no dejar al operador solo.
+                  elegidos = [...elegidos, refuerzo];
+                }
+              }
             } else {
               faltantes.push({ date: dISO, type: tipo, faltan: 1, motivo: "sin auxiliar de compañía para el operador" });
             }
