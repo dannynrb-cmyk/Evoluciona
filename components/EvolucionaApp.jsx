@@ -617,6 +617,7 @@ function mapReglas(row) {
     cargoOperador: row.cargo_operador || "operador terapéutico",
     cargoAuxiliar: row.cargo_auxiliar || "auxiliar de enfermería",
     operadorRequiereAuxiliar: row.operador_requiere_auxiliar !== false,
+    diasRefuerzo: Array.isArray(row.dias_refuerzo) && row.dias_refuerzo.length ? row.dias_refuerzo : [5, 6],
   };
 }
 async function fetchReglas() {
@@ -639,6 +640,7 @@ async function updateReglasRemote(form) {
     cargo_operador: form.cargoOperador,
     cargo_auxiliar: form.cargoAuxiliar,
     operador_requiere_auxiliar: !!form.operadorRequiereAuxiliar,
+    dias_refuerzo: form.diasRefuerzo || [5, 6],
     updated_at: new Date().toISOString(),
   };
   const [row] = await sb(`reglas_turnos?id=eq.${form.id}`, { method: "PATCH", body: JSON.stringify(body) });
@@ -2110,14 +2112,16 @@ function ActividadesCalendario({ ctx }) {
   );
 }
 
-function esFinDeSemanaOFestivo(dISO, festivoSet) {
+function esFinDeSemanaOFestivo(dISO, festivoSet, diasRefuerzo) {
   const dow = new Date(`${dISO}T00:00:00`).getDay();
-  return dow === 0 || dow === 6 || festivoSet.has(dISO);
+  const nuestroDia = (dow + 6) % 7; // 0=lunes ... 6=domingo
+  const dias = diasRefuerzo && diasRefuerzo.length ? diasRefuerzo : [5, 6]; // por defecto: sábado y domingo
+  return dias.includes(nuestroDia) || festivoSet.has(dISO);
 }
 function minRequeridoTurno(dISO, tipo, reglas, festivoSet) {
   if (!reglas) return tipo === "turno_noche" ? 2 : 1;
   const base = tipo === "turno_noche" ? reglas.personalMinTurnoNoche : reglas.personalMinTurnoDia;
-  return esFinDeSemanaOFestivo(dISO, festivoSet) ? Math.max(base, reglas.personalMinFinSemanaFestivo) : base;
+  return esFinDeSemanaOFestivo(dISO, festivoSet, reglas.diasRefuerzo) ? Math.max(base, reglas.personalMinFinSemanaFestivo) : base;
 }
 
 function esOperador(cargo, reglas) {
@@ -3390,6 +3394,34 @@ function Configuracion({ ctx }) {
           {numField("personalMinTurnoDia", "Personas mínimas · turno día")}
           {numField("personalMinTurnoNoche", "Personas mínimas · turno noche")}
           {numField("personalMinFinSemanaFestivo", "Personas mínimas · fin de semana/festivo")}
+        </div>
+        <div className="mt-3.5">
+          <Field label="Días que usan ese mínimo reforzado (además de los festivos)">
+            <div className="flex flex-wrap gap-1.5">
+              {DIA_LABEL.map((label, idx) => {
+                const activo = (form.diasRefuerzo || [5, 6]).includes(idx);
+                return (
+                  <button
+                    key={idx}
+                    type="button"
+                    disabled={!isMaestro}
+                    onClick={() => {
+                      const actuales = form.diasRefuerzo || [5, 6];
+                      const nuevos = activo ? actuales.filter((d) => d !== idx) : [...actuales, idx].sort();
+                      setForm((f) => ({ ...f, diasRefuerzo: nuevos }));
+                    }}
+                    className="ev-btn px-3 py-1.5 text-[12.5px]"
+                    style={{ background: activo ? T.primary : "transparent", color: activo ? "#fff" : T.ink, border: `1px solid ${activo ? T.primary : T.border}`, opacity: isMaestro ? 1 : 0.7 }}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-[11px] mt-1.5" style={{ color: T.muted }}>
+              Por defecto: sábado y domingo. Actívalo también, por ejemplo, un viernes si ese día necesita el mismo refuerzo de personal.
+            </p>
+          </Field>
         </div>
         <div className="mt-3.5">
           <Field label="Cargos habilitados para turnos (separados por coma)">
