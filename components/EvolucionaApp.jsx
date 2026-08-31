@@ -1971,7 +1971,40 @@ function Dashboard({ ctx }) {
       </div>
 
       <div className="grid lg:grid-cols-3 gap-5">
-        <div className="ev-card p-5 lg:col-span-2">
+        <div className="ev-card p-6 lg:col-span-2" style={{ border: `1px solid ${T.primary}30` }}>
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="ev-display font-bold text-[19px] flex items-center gap-2">
+              <Megaphone size={20} style={{ color: T.primary }} /> Tablero de avisos
+            </h3>
+            {isMaestro && (
+              <button onClick={() => setAvisoModal(true)} className="ev-btn px-3.5 py-2 text-[12.5px] text-white shrink-0" style={{ background: T.primary }}>
+                <Plus size={15} /> Nuevo aviso
+              </button>
+            )}
+          </div>
+          <p className="text-[12.5px] mb-4" style={{ color: T.muted }}>Información puntual para el equipo: novedades de un paciente, avisos generales, etc.</p>
+          <div className="grid sm:grid-cols-2 gap-3 overflow-y-auto ev-scroll" style={{ maxHeight: 360 }}>
+            {avisosVigentes.map((a) => (
+              <div key={a.id} className="rounded-xl p-4 flex flex-col gap-1.5" style={{ background: a.nivel === "importante" ? T.dangerSoft : T.primarySoft }}>
+                <div className="flex items-start justify-between gap-2">
+                  <p className="font-bold text-[14.5px]" style={{ color: a.nivel === "importante" ? T.danger : T.primaryDark }}>{a.titulo}</p>
+                  {isMaestro && (
+                    <button onClick={() => eliminarAviso(a.id)} className="shrink-0" style={{ color: T.muted }}><X size={14} /></button>
+                  )}
+                </div>
+                <p className="text-[13px] leading-snug" style={{ color: T.ink }}>{a.mensaje}</p>
+                <p className="text-[10.5px] mt-0.5" style={{ color: T.muted }}>
+                  {a.autor ? `${a.autor} · ` : ""}{new Date(a.createdAt).toLocaleDateString("es-CO", { day: "numeric", month: "short" })}
+                </p>
+              </div>
+            ))}
+            {avisosVigentes.length === 0 && (
+              <p className="text-[12.5px] col-span-full text-center py-8" style={{ color: T.muted }}>No hay avisos publicados.</p>
+            )}
+          </div>
+        </div>
+
+        <div className="ev-card p-5">
           <div className="flex items-center justify-between mb-4">
             <h3 className="ev-display font-semibold text-[15px]">Próximas actividades</h3>
             <button onClick={() => setView("actividades")} className="text-[12.5px] font-semibold flex items-center gap-1" style={{ color: T.primary }}>
@@ -1996,39 +2029,6 @@ function Dashboard({ ctx }) {
                 </div>
               </div>
             ))}
-          </div>
-        </div>
-
-        <div className="ev-card p-5 flex flex-col">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="ev-display font-semibold text-[15px] flex items-center gap-2">
-              <Megaphone size={15} style={{ color: T.primary }} /> Tablero de avisos
-            </h3>
-            {isMaestro && (
-              <button onClick={() => setAvisoModal(true)} className="shrink-0" style={{ color: T.primary }} title="Nuevo aviso">
-                <Plus size={16} />
-              </button>
-            )}
-          </div>
-          <p className="text-[11.5px] mb-3" style={{ color: T.muted }}>Información puntual para el equipo: novedades de un paciente, avisos generales, etc.</p>
-          <div className="flex flex-col gap-2 overflow-y-auto ev-scroll" style={{ maxHeight: 260 }}>
-            {avisosVigentes.map((a) => (
-              <div key={a.id} className="rounded-lg p-2.5 flex flex-col gap-0.5" style={{ background: a.nivel === "importante" ? T.dangerSoft : T.primarySoft }}>
-                <div className="flex items-start justify-between gap-2">
-                  <p className="font-semibold text-[12.5px]" style={{ color: a.nivel === "importante" ? T.danger : T.primaryDark }}>{a.titulo}</p>
-                  {isMaestro && (
-                    <button onClick={() => eliminarAviso(a.id)} className="shrink-0" style={{ color: T.muted }}><X size={13} /></button>
-                  )}
-                </div>
-                <p className="text-[12px] leading-snug" style={{ color: T.ink }}>{a.mensaje}</p>
-                <p className="text-[10px] mt-0.5" style={{ color: T.muted }}>
-                  {a.autor ? `${a.autor} · ` : ""}{new Date(a.createdAt).toLocaleDateString("es-CO", { day: "numeric", month: "short" })}
-                </p>
-              </div>
-            ))}
-            {avisosVigentes.length === 0 && (
-              <p className="text-[12px] text-center py-4" style={{ color: T.muted }}>No hay avisos publicados.</p>
-            )}
           </div>
         </div>
       </div>
