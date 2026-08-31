@@ -2150,6 +2150,25 @@ function finesDeSemanaDelMes(anio, mes) {
   return out;
 }
 
+// Genera un número "semilla" a partir de un texto (ej. la fecha del lunes de
+// la semana), para poder mezclar listas de forma determinista: mismos datos
+// de entrada siempre dan el mismo resultado, pero cada semana se ve distinta.
+function hashSeed(texto) {
+  let h = 2166136261;
+  for (let i = 0; i < texto.length; i++) { h ^= texto.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+function mezclarConSemilla(arr, semilla) {
+  const a = [...arr];
+  let s = semilla || 1;
+  for (let i = a.length - 1; i > 0; i--) {
+    s = (s * 1103515245 + 12345) & 0x7fffffff;
+    const j = s % (i + 1);
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
 function generarPropuestaTurnos({ personal, eventosExistentes, reglas, festivos, novedades, reglasPersonal, fechaInicioISO, semanas }) {
   const festivoSet = new Set((festivos || []).map((f) => f.fecha));
   const elegibles = personal.filter((p) => p.estado === "activo" && esCargoDeTurno(p.cargo, reglas?.cargosTurno));
@@ -2183,10 +2202,10 @@ function generarPropuestaTurnos({ personal, eventosExistentes, reglas, festivos,
 
   for (let semanaIdx = 0; semanaIdx < semanas; semanaIdx++) {
     const diasSemana = dias.slice(semanaIdx * 7, semanaIdx * 7 + 7);
-    // Rota el orden del personal cada semana para que, en caso de empate en
-    // horas/turnos, no siempre gane la misma persona por estar primera en la lista.
-    const offsetRotacion = elegibles.length ? semanaIdx % elegibles.length : 0;
-    const elegiblesSemana = [...elegibles.slice(offsetRotacion), ...elegibles.slice(0, offsetRotacion)];
+    // Mezcla el orden del personal cada semana (con semilla fija = la fecha del
+    // lunes de esa semana) para que, en caso de empate en horas/turnos, no
+    // siempre gane la misma persona ni se repita el mismo patrón semana a semana.
+    const elegiblesSemana = mezclarConSemilla(elegibles, hashSeed(toISO(diasSemana[0])));
     // Contadores por persona, reiniciados cada semana (el objetivo es semanal)
     const conteo = {};
     elegibles.forEach((p) => { conteo[p.id] = { turno_dia: 0, turno_noche: 0, horas: 0 }; });
@@ -2280,11 +2299,15 @@ function generarPropuestaTurnos({ personal, eventosExistentes, reglas, festivos,
 
         let elegidos = [...fijos, ...candidatos.slice(0, Math.max(0, requerido - fijos.length))];
 
-        if (reglas.operadorRequiereAuxiliar) {
-          const hayOperador = elegidos.some((p) => esOperador(p.cargo, reglas));
-          const hayAuxiliar = elegidos.some((p) => esAuxiliar(p.cargo, reglas));
-          if (hayOperador && !hayAuxiliar) {
-            const refuerzo = candidatos.find((p) => esAuxiliar(p.cargo, reglas) && !elegidos.includes(p));
+        if (reglas.operadorRequiereAuxiliar && requerido >= 2) {
+          const rolesAVerificar = [
+            { esRol: (c) => esOperador(c, reglas), motivo: "sin operador terapéutico en el turno" },
+            { esRol: (c) => esAuxiliar(c, reglas), motivo: "sin auxiliar de compañía para el operador" },
+          ];
+          rolesAVerificar.forEach(({ esRol, motivo }) => {
+            const hayRol = elegidos.some((p) => esRol(p.cargo));
+            if (hayRol) return;
+            const refuerzo = candidatos.find((p) => esRol(p.cargo) && !elegidos.includes(p));
             if (refuerzo) {
               if (elegidos.length < requerido) {
                 // Hay cupo libre (aún no se llegó al mínimo): se suma sin pasarse.
@@ -2297,15 +2320,15 @@ function generarPropuestaTurnos({ personal, eventosExistentes, reglas, festivos,
                   const aQuitar = noFijos[noFijos.length - 1];
                   elegidos = [...elegidos.filter((p) => p.id !== aQuitar.id), refuerzo];
                 } else {
-                  // Todos los asignados son fijos ("siempre"); se agrega el auxiliar
-                  // aunque implique un cupo extra, para no dejar al operador solo.
+                  // Todos los asignados son fijos ("siempre"); se agrega igual,
+                  // aunque implique un cupo extra, para no dejar el turno descubierto.
                   elegidos = [...elegidos, refuerzo];
                 }
               }
             } else {
-              faltantes.push({ date: dISO, type: tipo, faltan: 1, motivo: "sin auxiliar de compañía para el operador" });
+              faltantes.push({ date: dISO, type: tipo, faltan: 1, motivo });
             }
-          }
+          });
         }
 
         elegidos.forEach((p) => {
