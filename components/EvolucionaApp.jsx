@@ -32,6 +32,7 @@ import {
   ChevronDown,
   Search,
   FileText,
+  Bot,
 } from "lucide-react";
 import {
   BarChart,
@@ -790,6 +791,7 @@ const NAV = [
   { key: "novedades", label: "Novedades", icon: UserX },
   { key: "biblioteca", label: "Biblioteca", icon: BookOpen },
   { key: "formacion", label: "Formación Continua", icon: GraduationCap },
+  { key: "evo", label: "Evo", icon: Bot },
   { key: "personal", label: "Personal", icon: Users },
   { key: "reportes", label: "Reportes", icon: FileBarChart },
   { key: "configuracion", label: "Configuración", icon: Settings },
@@ -1642,6 +1644,7 @@ export default function EvolucionaApp() {
           {view === "novedades" && <Novedades ctx={ctx} />}
           {view === "biblioteca" && <Biblioteca ctx={ctx} />}
           {view === "formacion" && <FormacionContinua ctx={ctx} />}
+          {view === "evo" && <EvoChat ctx={ctx} />}
           {view === "personal" && <Personal ctx={ctx} />}
           {view === "reportes" && <Reportes ctx={ctx} />}
           {view === "configuracion" && <Configuracion ctx={ctx} />}
@@ -4648,6 +4651,121 @@ function FormacionContinua({ ctx }) {
         {formacion.length === 0 && (
           <p className="text-[12.5px] col-span-full text-center py-10" style={{ color: T.muted }}>Todavía no hay contenido publicado.</p>
         )}
+      </div>
+    </div>
+  );
+}
+
+function EvoChat({ ctx }) {
+  const { servicioActualId } = ctx;
+  const [mensajes, setMensajes] = useState([]);
+  const [pregunta, setPregunta] = useState("");
+  const [cargando, setCargando] = useState(false);
+  const [error, setError] = useState(null);
+  const finRef = React.useRef(null);
+
+  React.useEffect(() => {
+    finRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [mensajes, cargando]);
+
+  async function enviar(e) {
+    e.preventDefault();
+    const texto = pregunta.trim();
+    if (!texto || cargando) return;
+    const historialParaEnviar = mensajes.map((m) => ({ role: m.role, text: m.text }));
+    setMensajes((prev) => [...prev, { role: "user", text: texto }]);
+    setPregunta("");
+    setError(null);
+    setCargando(true);
+    try {
+      const res = await fetch("/api/evo", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${ACCESS_TOKEN}` },
+        body: JSON.stringify({ pregunta: texto, servicioId: servicioActualId, historial: historialParaEnviar }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+      setMensajes((prev) => [...prev, { role: "evo", text: data.respuesta }]);
+    } catch (err) {
+      setError(err.message);
+      setMensajes((prev) => [...prev, { role: "evo", text: "No pude responder en este momento. Intenta de nuevo en un momento." }]);
+    } finally {
+      setCargando(false);
+    }
+  }
+
+  const sugerencias = [
+    "¿Qué metodología tiene la actividad de sistema de creencias?",
+    "¿Qué contenido de formación tenemos sobre factores de riesgo?",
+    "Resume los objetivos de las actividades del tema de valores.",
+  ];
+
+  return (
+    <div className="flex flex-col gap-4" style={{ height: "calc(100vh - 180px)", minHeight: 480 }}>
+      <div>
+        <h3 className="ev-display font-semibold text-[16px] flex items-center gap-2">
+          <Bot size={18} style={{ color: T.primary }} /> Evo
+        </h3>
+        <p className="text-[12.5px]" style={{ color: T.muted }}>
+          Tu asistente de formación y apoyo terapéutico. Responde solo con lo que ya existe en la Biblioteca de actividades y en Formación Continua — si algo no está ahí, te lo va a decir en vez de inventar.
+        </p>
+      </div>
+
+      <div className="ev-card flex-1 flex flex-col overflow-hidden">
+        <div className="flex-1 overflow-y-auto ev-scroll p-4 flex flex-col gap-3">
+          {mensajes.length === 0 && (
+            <div className="flex flex-col items-center justify-center h-full text-center gap-3 px-6">
+              <div className="w-12 h-12 rounded-full flex items-center justify-center" style={{ background: T.primarySoft }}>
+                <Bot size={22} style={{ color: T.primaryDark }} />
+              </div>
+              <p className="text-[13px]" style={{ color: T.muted }}>Pregúntame sobre las actividades o el contenido de formación que ya tienen cargado. Por ejemplo:</p>
+              <div className="flex flex-col gap-1.5 w-full max-w-sm">
+                {sugerencias.map((s, i) => (
+                  <button
+                    key={i}
+                    onClick={() => setPregunta(s)}
+                    className="text-left text-[12px] rounded-lg px-3 py-2 hover:bg-black/[0.03]"
+                    style={{ border: `1px solid ${T.border}`, color: T.ink }}
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          {mensajes.map((m, i) => (
+            <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+              <div
+                className="max-w-[80%] rounded-2xl px-3.5 py-2.5 text-[13px] leading-snug whitespace-pre-wrap"
+                style={m.role === "user"
+                  ? { background: T.primary, color: "#fff", borderBottomRightRadius: 4 }
+                  : { background: T.base, color: T.ink, border: `1px solid ${T.border}`, borderBottomLeftRadius: 4 }}
+              >
+                {m.text}
+              </div>
+            </div>
+          ))}
+          {cargando && (
+            <div className="flex justify-start">
+              <div className="rounded-2xl px-3.5 py-2.5 text-[13px]" style={{ background: T.base, border: `1px solid ${T.border}`, color: T.muted, borderBottomLeftRadius: 4 }}>
+                Evo está pensando…
+              </div>
+            </div>
+          )}
+          <div ref={finRef} />
+        </div>
+
+        <form onSubmit={enviar} className="flex items-center gap-2 p-3 border-t" style={{ borderColor: T.border }}>
+          <input
+            value={pregunta}
+            onChange={(e) => setPregunta(e.target.value)}
+            placeholder="Escribe tu pregunta…"
+            style={{ ...inputStyle, flex: 1 }}
+          />
+          <button type="submit" disabled={!pregunta.trim() || cargando} className="ev-btn px-4 py-2 text-[13px] text-white disabled:opacity-40" style={{ background: T.primary }}>
+            Enviar
+          </button>
+        </form>
       </div>
     </div>
   );
