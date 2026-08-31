@@ -67,6 +67,9 @@ export async function POST(request) {
       contexto += "\n\n=== FORMACIÓN CONTINUA (infografías, videos, artículos/PDF) ===\n";
       formacion.forEach((f) => {
         contexto += `\n· "${f.titulo}" (${f.tipo})\n  Descripción: ${f.descripcion || "—"}\n`;
+        if (f.tipo === "pdf" && f.contenido_texto) {
+          contexto += `  Contenido del documento (extracto):\n  ${f.contenido_texto.slice(0, 8000)}\n`;
+        }
       });
     }
     if (!contexto) {

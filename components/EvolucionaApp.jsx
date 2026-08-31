@@ -395,7 +395,7 @@ async function subirArchivoFormacion(file) {
   return { path, url: `${SUPABASE_URL}/storage/v1/object/public/${FORMACION_BUCKET}/${path}` };
 }
 function mapFormacion(row) {
-  return { id: row.id, titulo: row.titulo, descripcion: row.descripcion || "", tipo: row.tipo, archivoPath: row.archivo_path, archivoUrl: row.archivo_url, autor: row.autor || "", createdAt: row.created_at };
+  return { id: row.id, titulo: row.titulo, descripcion: row.descripcion || "", tipo: row.tipo, archivoPath: row.archivo_path, archivoUrl: row.archivo_url, autor: row.autor || "", createdAt: row.created_at, contenidoTexto: row.contenido_texto || "" };
 }
 async function fetchFormacion() {
   const rows = await sb("formacion_continua?select=*&order=created_at.desc");
@@ -404,7 +404,7 @@ async function fetchFormacion() {
 async function insertFormacionRemote(form) {
   const [row] = await sb("formacion_continua", {
     method: "POST",
-    body: JSON.stringify({ titulo: form.titulo, descripcion: form.descripcion || null, tipo: form.tipo, archivo_path: form.archivoPath, archivo_url: form.archivoUrl, autor: form.autor || null }),
+    body: JSON.stringify({ titulo: form.titulo, descripcion: form.descripcion || null, tipo: form.tipo, archivo_path: form.archivoPath, archivo_url: form.archivoUrl, autor: form.autor || null, contenido_texto: form.contenidoTexto || null }),
   });
   return mapFormacion(row);
 }
@@ -1402,7 +1402,18 @@ export default function EvolucionaApp() {
     setSubiendoArchivo(true);
     try {
       const { path, url } = await subirArchivoFormacion(file);
-      const saved = await insertFormacionRemote({ ...form, archivoPath: path, archivoUrl: url, autor: session?.email || "" });
+      let contenidoTexto = "";
+      if (form.tipo === "pdf") {
+        try {
+          const res = await fetch("/api/extraer-pdf", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url }) });
+          const data = await res.json().catch(() => ({}));
+          if (res.ok) contenidoTexto = data.texto || "";
+          else showToast(`El PDF se subió, pero no se pudo leer su contenido para Evo: ${data.error || res.status}`, "warn");
+        } catch (_) {
+          showToast("El PDF se subió, pero no se pudo leer su contenido para Evo (revisa tu conexión).", "warn");
+        }
+      }
+      const saved = await insertFormacionRemote({ ...form, archivoPath: path, archivoUrl: url, autor: session?.email || "", contenidoTexto });
       setFormacion((prev) => [saved, ...prev]);
       setFormacionModal(false);
       showToast("Contenido publicado");
@@ -4697,7 +4708,7 @@ function EvoChat({ ctx }) {
   const sugerencias = [
     "¿Qué metodología tiene la actividad de sistema de creencias?",
     "¿Qué contenido de formación tenemos sobre factores de riesgo?",
-    "Resume los objetivos de las actividades del tema de valores.",
+    "Hazme una nota de actividad de sistema de creencias para historia clínica.",
   ];
 
   return (
@@ -4707,7 +4718,7 @@ function EvoChat({ ctx }) {
           <Bot size={18} style={{ color: T.primary }} /> Evo
         </h3>
         <p className="text-[12.5px]" style={{ color: T.muted }}>
-          Tu asistente de formación y apoyo terapéutico. Responde solo con lo que ya existe en la Biblioteca de actividades y en Formación Continua — si algo no está ahí, te lo va a decir en vez de inventar.
+          Tu asistente de formación y apoyo terapéutico. Responde con lo que ya existe en la Biblioteca de actividades y en Formación Continua — incluyendo el contenido de adentro de los PDF — y si algo no está ahí, te lo va a decir en vez de inventar. También te puede ayudar a armar la estructura de una nota de actividad, dejando los datos del paciente para que tú los completes.
         </p>
       </div>
 
@@ -4806,6 +4817,7 @@ function FormacionModal({ ctx, onClose }) {
           </Field>
           <p className="text-[11px]" style={{ color: T.muted }}>
             El plan gratuito tiene 1 GB de espacio en total para archivos — para videos, prefiere clips cortos (1-3 minutos) para no llenarlo rápido.
+            {form.tipo === "pdf" && " Al subirlo, Evo va a leer el contenido de adentro para poder responder preguntas sobre él."}
           </p>
         </div>
         <div className="flex justify-end gap-2 mt-5">
