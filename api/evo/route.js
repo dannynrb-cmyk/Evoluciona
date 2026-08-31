@@ -3,7 +3,7 @@
 // porque este archivo nunca se envía al cliente — solo vive en Vercel.
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://zvyuqbrvixpnggynrqfa.supabase.co";
-const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_KEY;
+const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_KEY || "sb_publishable_G53F0OOT0-BzQlnXmen2XA_uZ1Yn9A9";
 
 export async function POST(request) {
   try {
@@ -30,6 +30,8 @@ export async function POST(request) {
       headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${accessToken}` },
     });
     if (!userRes.ok) {
+      const detalle = await userRes.text().catch(() => "");
+      console.error("Evo: fallo verificando sesión ->", userRes.status, detalle);
       return Response.json({ error: "Tu sesión no es válida. Vuelve a iniciar sesión." }, { status: 401 });
     }
 
@@ -105,6 +107,7 @@ ${contexto}`;
     );
     const geminiData = await geminiRes.json();
     if (!geminiRes.ok) {
+      console.error("Evo: fallo consultando Gemini ->", geminiRes.status, JSON.stringify(geminiData));
       const msg = geminiData?.error?.message || `Error ${geminiRes.status} al consultar la IA.`;
       return Response.json({ error: msg }, { status: 502 });
     }
@@ -113,6 +116,7 @@ ${contexto}`;
 
     return Response.json({ respuesta });
   } catch (err) {
+    console.error("Evo: error inesperado ->", err);
     return Response.json({ error: err.message || "Error inesperado en Evo." }, { status: 500 });
   }
 }
