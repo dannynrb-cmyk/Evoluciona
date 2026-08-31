@@ -32,7 +32,9 @@ export async function POST(request) {
     if (!userRes.ok) {
       const detalle = await userRes.text().catch(() => "");
       console.error("Evo: fallo verificando sesión ->", userRes.status, detalle);
-      return Response.json({ error: "Tu sesión no es válida. Vuelve a iniciar sesión." }, { status: 401 });
+      // Nota temporal de depuración: se muestra el detalle real en el mensaje
+      // para diagnosticar más rápido. Lo quitamos una vez quede resuelto.
+      return Response.json({ error: `DEBUG sesión inválida (${userRes.status}): ${detalle.slice(0, 300)}` }, { status: 401 });
     }
 
     // Trae el contenido de Evoluciona con la llave de servicio (sin restricción de

@@ -4688,7 +4688,7 @@ function EvoChat({ ctx }) {
       setMensajes((prev) => [...prev, { role: "evo", text: data.respuesta }]);
     } catch (err) {
       setError(err.message);
-      setMensajes((prev) => [...prev, { role: "evo", text: "No pude responder en este momento. Intenta de nuevo en un momento." }]);
+      setMensajes((prev) => [...prev, { role: "evo", text: `⚠️ ${err.message}` }]);
     } finally {
       setCargando(false);
     }
