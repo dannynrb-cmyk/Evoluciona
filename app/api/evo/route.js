@@ -81,6 +81,7 @@ Reglas estrictas que debes seguir siempre:
 3. Sé breve, claro y práctico — quien te consulta suele estar trabajando en ese momento.
 4. Cuando tu respuesta se base en una actividad o contenido específico, menciona su nombre exacto (tal como aparece abajo) para que la persona pueda encontrarlo en la plataforma.
 5. Escribe en español, con un tono cercano y profesional.
+6. Escribe en texto plano: no uses asteriscos, negritas, ni formato markdown — el chat los muestra como símbolos sueltos, no como formato. Usa numeración simple ("1.", "2.") o guiones para listas si hace falta.
 
 Contenido disponible actualmente en Evoluciona:
 ${contexto}`;
@@ -101,7 +102,7 @@ ${contexto}`;
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: systemInstruction }] },
           contents,
-          generationConfig: { maxOutputTokens: 800 },
+          generationConfig: { maxOutputTokens: 2000 },
         }),
       }
     );
