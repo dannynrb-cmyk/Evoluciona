@@ -30,6 +30,8 @@ import {
   GraduationCap,
   Building2,
   ChevronDown,
+  Search,
+  FileText,
 } from "lucide-react";
 import {
   BarChart,
@@ -2046,7 +2048,13 @@ function Dashboard({ ctx }) {
           {formacion.slice(0, 3).map((f) => (
             <button key={f.id} onClick={() => setView("formacion")} className="ev-card overflow-hidden text-left hover:shadow-md transition-shadow" style={{ border: `1px solid ${T.border}` }}>
               <div className="w-full flex items-center justify-center overflow-hidden" style={{ height: 90, background: T.base }}>
-                {f.tipo === "video" ? <video src={f.archivoUrl} className="w-full h-full object-cover" /> : <img src={f.archivoUrl} alt={f.titulo} className="w-full h-full object-cover" />}
+                {f.tipo === "video" ? (
+                  <video src={f.archivoUrl} className="w-full h-full object-cover" />
+                ) : f.tipo === "pdf" ? (
+                  <FileText size={28} style={{ color: T.primaryDark }} />
+                ) : (
+                  <img src={f.archivoUrl} alt={f.titulo} className="w-full h-full object-cover" />
+                )}
               </div>
               <div className="p-2.5">
                 <p className="text-[12px] font-semibold truncate">{f.titulo}</p>
@@ -3754,7 +3762,7 @@ function FestivoModal({ ctx, onClose }) {
 
 /* ============================== MODAL: NUEVA/EDITAR ACTIVIDAD ============================== */
 function EventModal({ ctx, onClose, onSave, initial }) {
-  const { personal, saving, biblioteca, reglas } = ctx;
+  const { personal, saving, biblioteca, reglas, temas } = ctx;
   const base = initial.event || {};
   const pre = initial.prefill || {};
   const allowedTypes = base.type
@@ -3806,7 +3814,20 @@ function EventModal({ ctx, onClose, onSave, initial }) {
             <Field label="Usar plantilla de la biblioteca (opcional)">
               <select onChange={(e) => e.target.value && usarBiblioteca(e.target.value)} defaultValue="" style={inputStyle}>
                 <option value="">— Escribir manualmente —</option>
-                {biblioteca.map((b) => <option key={b.id} value={b.id}>{b.nombre}</option>)}
+                {temas.map((tema) => {
+                  const items = biblioteca.filter((b) => b.temaId === tema.id);
+                  if (items.length === 0) return null;
+                  return (
+                    <optgroup key={tema.id} label={tema.nombre}>
+                      {items.map((b) => <option key={b.id} value={b.id}>{b.nombre}</option>)}
+                    </optgroup>
+                  );
+                })}
+                {biblioteca.some((b) => !b.temaId) && (
+                  <optgroup label="Sin tema">
+                    {biblioteca.filter((b) => !b.temaId).map((b) => <option key={b.id} value={b.id}>{b.nombre}</option>)}
+                  </optgroup>
+                )}
               </select>
             </Field>
           )}
@@ -4224,6 +4245,16 @@ function Biblioteca({ ctx }) {
 
 function BibliotecaIndividual({ ctx }) {
   const { biblioteca, temas, isMaestro, setBibModal, deleteBiblioteca, setTemaModal, eliminarTema } = ctx;
+  const [busqueda, setBusqueda] = useState("");
+  const term = normalizarTexto(busqueda);
+
+  function coincide(b) {
+    if (!term) return true;
+    const tema = temas.find((t) => t.id === b.temaId);
+    return normalizarTexto(b.nombre).includes(term)
+      || normalizarTexto(b.metodologia).includes(term)
+      || (tema && normalizarTexto(tema.nombre).includes(term));
+  }
 
   function tarjeta(b) {
     return (
@@ -4248,7 +4279,8 @@ function BibliotecaIndividual({ ctx }) {
     );
   }
 
-  const sinTema = biblioteca.filter((b) => !b.temaId);
+  const sinTema = biblioteca.filter((b) => !b.temaId && coincide(b));
+  const hayResultados = biblioteca.some(coincide);
 
   return (
     <>
@@ -4269,8 +4301,23 @@ function BibliotecaIndividual({ ctx }) {
         )}
       </div>
 
+      <div className="relative max-w-sm">
+        <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: T.muted }} />
+        <input
+          value={busqueda}
+          onChange={(e) => setBusqueda(e.target.value)}
+          placeholder="Buscar por actividad o tema… ej. sistema de creencias"
+          style={{ ...inputStyle, paddingLeft: 32 }}
+        />
+      </div>
+
+      {!hayResultados && term && (
+        <p className="text-[12.5px] text-center py-8" style={{ color: T.muted }}>No hay actividades ni temas que coincidan con "{busqueda}".</p>
+      )}
+
       {temas.map((tema) => {
-        const items = biblioteca.filter((b) => b.temaId === tema.id);
+        const items = biblioteca.filter((b) => b.temaId === tema.id && coincide(b));
+        if (term && items.length === 0) return null; // oculta el tema si no aporta resultados a esta búsqueda
         return (
           <div key={tema.id} className="flex flex-col gap-3">
             <div className="flex items-center justify-between border-b pb-1.5" style={{ borderColor: T.border }}>
@@ -4290,12 +4337,12 @@ function BibliotecaIndividual({ ctx }) {
       })}
 
       <div className="flex flex-col gap-3">
-        {temas.length > 0 && (
+        {temas.length > 0 && sinTema.length > 0 && (
           <h4 className="ev-display font-semibold text-[14px] border-b pb-1.5" style={{ color: T.muted, borderColor: T.border }}>Sin tema</h4>
         )}
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {sinTema.map(tarjeta)}
-          {sinTema.length === 0 && temas.length === 0 && (
+          {sinTema.length === 0 && temas.length === 0 && !term && (
             <p className="text-[12.5px] col-span-full text-center py-8" style={{ color: T.muted }}>Todavía no hay plantillas registradas.</p>
           )}
         </div>
@@ -4445,7 +4492,7 @@ function PlantillaSemanalEditor({ ctx, plantilla }) {
 }
 
 function PlantillaItemForm({ ctx, plantillaId, diaSemana, biblioteca, onClose }) {
-  const { agregarPlantillaItem, saving } = ctx;
+  const { agregarPlantillaItem, saving, temas } = ctx;
   const [form, setForm] = useState({ nombre: "", tipo: ACTIVIDAD_TYPES[0], horaInicio: 8, horaFin: 9, metodologia: "", objetivos: "" });
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
@@ -4460,7 +4507,20 @@ function PlantillaItemForm({ ctx, plantillaId, diaSemana, biblioteca, onClose })
       {biblioteca.length > 0 && (
         <select onChange={(e) => e.target.value && usarBiblioteca(e.target.value)} defaultValue="" style={{ ...inputStyle, fontSize: 12 }}>
           <option value="">— De la biblioteca —</option>
-          {biblioteca.map((b) => <option key={b.id} value={b.id}>{b.nombre}</option>)}
+          {temas.map((tema) => {
+            const items = biblioteca.filter((b) => b.temaId === tema.id);
+            if (items.length === 0) return null;
+            return (
+              <optgroup key={tema.id} label={tema.nombre}>
+                {items.map((b) => <option key={b.id} value={b.id}>{b.nombre}</option>)}
+              </optgroup>
+            );
+          })}
+          {biblioteca.some((b) => !b.temaId) && (
+            <optgroup label="Sin tema">
+              {biblioteca.filter((b) => !b.temaId).map((b) => <option key={b.id} value={b.id}>{b.nombre}</option>)}
+            </optgroup>
+          )}
         </select>
       )}
       <input value={form.nombre} onChange={(e) => set("nombre", e.target.value)} placeholder="Nombre de la actividad" style={{ ...inputStyle, fontSize: 12 }} />
@@ -4486,17 +4546,20 @@ function PlantillaItemForm({ ctx, plantillaId, diaSemana, biblioteca, onClose })
   );
 }
 
-const TIPO_FORMACION = { infografia: "Infografía", mapa_mental: "Mapa mental", video: "Video", otro: "Otro" };
+const TIPO_FORMACION = { infografia: "Infografía", mapa_mental: "Mapa mental", video: "Video", pdf: "Artículo/Libro (PDF)", otro: "Otro" };
 
 function FormacionContinua({ ctx }) {
   const { formacion, isMaestro, setFormacionModal, eliminarFormacion, session, vistos, preguntas, resultados, marcarVisto, setTestModal, setGestionarTestModal, setParticipacionModal } = ctx;
+  const [busqueda, setBusqueda] = useState("");
+  const term = normalizarTexto(busqueda);
+  const formacionFiltrada = formacion.filter((f) => !term || normalizarTexto(f.titulo).includes(term) || normalizarTexto(f.descripcion).includes(term));
   return (
     <div className="flex flex-col gap-4">
       <ReadOnlyBanner isMaestro={isMaestro} />
       <div className="flex items-center justify-between">
         <div>
           <h3 className="ev-display font-semibold text-[16px]">Formación continua</h3>
-          <p className="text-[12.5px]" style={{ color: T.muted }}>Infografías, mapas mentales y videos cortos sobre temas específicos, para todo el equipo.</p>
+          <p className="text-[12.5px]" style={{ color: T.muted }}>Infografías, mapas mentales, artículos/libros en PDF y videos cortos sobre temas específicos, para todo el equipo.</p>
         </div>
         {isMaestro && (
           <button onClick={() => setFormacionModal(true)} className="ev-btn px-3.5 py-2 text-[12.5px] text-white shrink-0" style={{ background: T.primary }}>
@@ -4504,8 +4567,15 @@ function FormacionContinua({ ctx }) {
           </button>
         )}
       </div>
+      <div className="relative max-w-sm">
+        <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: T.muted }} />
+        <input value={busqueda} onChange={(e) => setBusqueda(e.target.value)} placeholder="Buscar por título o descripción…" style={{ ...inputStyle, paddingLeft: 32 }} />
+      </div>
+      {formacionFiltrada.length === 0 && term && (
+        <p className="text-[12.5px] text-center py-8" style={{ color: T.muted }}>Nada coincide con "{busqueda}".</p>
+      )}
       <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        {formacion.map((f) => {
+        {formacionFiltrada.map((f) => {
           const miVisto = vistos.find((v) => v.formacionId === f.id && v.usuarioId === session?.id);
           const susPreguntas = preguntas.filter((p) => p.formacionId === f.id);
           const miResultado = resultados.find((r) => r.formacionId === f.id && r.usuarioId === session?.id);
@@ -4516,6 +4586,11 @@ function FormacionContinua({ ctx }) {
               <div className="w-full flex items-center justify-center overflow-hidden" style={{ height: 150, background: T.base }}>
                 {f.tipo === "video" ? (
                   <video src={f.archivoUrl} controls className="w-full h-full object-cover" />
+                ) : f.tipo === "pdf" ? (
+                  <a href={f.archivoUrl} target="_blank" rel="noopener noreferrer" className="w-full h-full flex flex-col items-center justify-center gap-1.5 hover:opacity-80" style={{ color: T.primaryDark }}>
+                    <FileText size={36} />
+                    <span className="text-[11px] font-semibold">Abrir PDF</span>
+                  </a>
                 ) : (
                   <img src={f.archivoUrl} alt={f.titulo} className="w-full h-full object-cover" />
                 )}
@@ -4603,8 +4678,13 @@ function FormacionModal({ ctx, onClose }) {
           <Field label="Descripción (opcional)">
             <textarea rows={3} value={form.descripcion} onChange={(e) => set("descripcion", e.target.value)} placeholder="De qué trata…" style={{ ...inputStyle, resize: "vertical" }} />
           </Field>
-          <Field label={form.tipo === "video" ? "Archivo de video" : "Archivo de imagen"}>
-            <input type="file" accept={form.tipo === "video" ? "video/*" : "image/*"} onChange={(e) => setFile(e.target.files?.[0] || null)} style={{ ...inputStyle, padding: "6px 8px" }} />
+          <Field label={form.tipo === "video" ? "Archivo de video" : form.tipo === "pdf" ? "Archivo PDF" : "Archivo de imagen"}>
+            <input
+              type="file"
+              accept={form.tipo === "video" ? "video/*" : form.tipo === "pdf" ? "application/pdf" : "image/*"}
+              onChange={(e) => setFile(e.target.files?.[0] || null)}
+              style={{ ...inputStyle, padding: "6px 8px" }}
+            />
           </Field>
           <p className="text-[11px]" style={{ color: T.muted }}>
             El plan gratuito tiene 1 GB de espacio en total para archivos — para videos, prefiere clips cortos (1-3 minutos) para no llenarlo rápido.
