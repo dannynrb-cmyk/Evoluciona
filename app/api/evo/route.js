@@ -32,9 +32,7 @@ export async function POST(request) {
     if (!userRes.ok) {
       const detalle = await userRes.text().catch(() => "");
       console.error("Evo: fallo verificando sesión ->", userRes.status, detalle);
-      // Nota temporal de depuración: se muestra el detalle real en el mensaje
-      // para diagnosticar más rápido. Lo quitamos una vez quede resuelto.
-      return Response.json({ error: `DEBUG sesión inválida (${userRes.status}): ${detalle.slice(0, 300)}` }, { status: 401 });
+      return Response.json({ error: "Tu sesión expiró o no es válida. Cierra sesión y vuelve a entrar." }, { status: 401 });
     }
 
     // Trae el contenido de Evoluciona con la llave de servicio (sin restricción de
@@ -96,14 +94,14 @@ ${contexto}`;
     ];
 
     const geminiRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${GEMINI_KEY}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: systemInstruction }] },
           contents,
-          generationConfig: { temperature: 0.3, maxOutputTokens: 800 },
+          generationConfig: { maxOutputTokens: 800 },
         }),
       }
     );
