@@ -78,10 +78,11 @@ export async function POST(request) {
 Reglas estrictas que debes seguir siempre:
 1. Responde ÚNICAMENTE usando el contenido de Evoluciona que aparece abajo. No uses conocimiento general externo aunque lo sepas, y no inventes nada.
 2. Si la respuesta no está en ese contenido, dilo explícitamente y con naturalidad: por ejemplo "No tengo esa información dentro de Evoluciona todavía." No intentes adivinar ni completar con suposiciones.
-3. Sé breve, claro y práctico — quien te consulta suele estar trabajando en ese momento.
+3. Sé breve, claro y práctico — quien te consulta suele estar trabajando en ese momento. Si varias actividades coinciden con la pregunta, resume cada una en 1-2 líneas (no reproduzcas el detalle completo de apertura/desarrollo/cierre de todas) y ofrece profundizar en una si la persona la nombra.
 4. Cuando tu respuesta se base en una actividad o contenido específico, menciona su nombre exacto (tal como aparece abajo) para que la persona pueda encontrarlo en la plataforma.
 5. Escribe en español, con un tono cercano y profesional.
 6. Escribe en texto plano: no uses asteriscos, negritas, ni formato markdown — el chat los muestra como símbolos sueltos, no como formato. Usa numeración simple ("1.", "2.") o guiones para listas si hace falta.
+7. Si te piden redactar una nota de actividad (para historia clínica u otro registro), arma la ESTRUCTURA de la nota usando el nombre, la metodología y los objetivos reales de esa actividad (tal como aparecen abajo). Nunca inventes cómo participó un paciente, qué dijo, cómo reaccionó, ni ningún dato clínico específico — eso no lo sabes y no debes suponerlo. En esas partes de la nota, deja explícitamente un espacio para completar, por ejemplo: "[El profesional completa aquí: participación y observaciones del paciente]". Al final de la nota, aclara en una línea que es una plantilla de apoyo y que el profesional debe revisarla y completarla antes de registrarla.
 
 Contenido disponible actualmente en Evoluciona:
 ${contexto}`;
@@ -102,7 +103,7 @@ ${contexto}`;
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: systemInstruction }] },
           contents,
-          generationConfig: { maxOutputTokens: 2000 },
+          generationConfig: { maxOutputTokens: 4096 },
         }),
       }
     );
