@@ -167,6 +167,43 @@ function ServicioSelector({ ctx }) {
   );
 }
 
+const TELEGRAM_BOT_USERNAME = "EvolucionaTurnosBot";
+
+function TelegramVinculoModal({ ctx, onClose }) {
+  const { telegramVinculoModal } = ctx;
+  const { persona, codigo } = telegramVinculoModal;
+  const enlace = `https://t.me/${TELEGRAM_BOT_USERNAME}?start=${codigo}`;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="ev-card w-full max-w-sm p-5">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="ev-display font-semibold text-[16px]">Vincular Telegram — {persona.nombre}</h3>
+          <button onClick={onClose}><X size={18} /></button>
+        </div>
+        <p className="text-[13px] mb-4" style={{ color: T.muted }}>
+          Pídele a <strong style={{ color: T.ink }}>{persona.nombre}</strong> que abra este enlace desde su celular (o que escanee el código si se lo compartes en pantalla) y toque "Iniciar" en Telegram:
+        </p>
+        <a
+          href={enlace}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="ev-btn w-full justify-center px-4 py-2.5 text-[13px] text-white mb-3"
+          style={{ background: "#229ED9" }}
+        >
+          Abrir en Telegram
+        </a>
+        <p className="text-[11.5px] text-center mb-1" style={{ color: T.muted }}>o, si prefiere escribirlo a mano en el bot @{TELEGRAM_BOT_USERNAME}:</p>
+        <p className="ev-mono text-center text-[20px] font-bold tracking-widest py-2 rounded-lg" style={{ background: T.base, color: T.primaryDark }}>{codigo}</p>
+        <p className="text-[11px] text-center mt-2" style={{ color: T.muted }}>Este código es válido por 20 minutos.</p>
+        <div className="flex justify-end mt-5">
+          <button onClick={onClose} className="ev-btn px-4 py-2 text-[13px]" style={{ border: `1px solid ${T.border}` }}>Cerrar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ServicioModal({ ctx, onClose }) {
   const { servicios, servicioActualId, crearServicio, renombrarServicio, saving } = ctx;
   const actual = servicios.find((s) => s.id === servicioActualId);
@@ -356,6 +393,7 @@ function mapPersonal(row) {
     id: row.id, nombre: row.nombre, cargo: row.cargo, area: row.area,
     tipoContrato: row.tipo_contrato, horas: Number(row.horas_semana),
     disponibilidad: row.disponibilidad, estado: row.estado,
+    telegramVinculado: !!row.telegram_chat_id,
   };
 }
 function mapBiblioteca(row) {
@@ -552,6 +590,22 @@ async function deleteEventRemote(event) {
 }
 async function toggleEstadoRemote(id, current) {
   const [row] = await sb(`personal?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ estado: current === "activo" ? "inactivo" : "activo" }) });
+  return mapPersonal(row);
+}
+function generarCodigoAleatorio() {
+  const chars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // sin O/0/I/1, para que no se confundan al escribirlo
+  let out = "";
+  for (let i = 0; i < 6; i++) out += chars[Math.floor(Math.random() * chars.length)];
+  return out;
+}
+async function generarVinculoTelegramRemote(id) {
+  const codigo = generarCodigoAleatorio();
+  const expira = new Date(Date.now() + 20 * 60 * 1000).toISOString(); // válido 20 minutos
+  await sb(`personal?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ telegram_link_code: codigo, telegram_link_expira: expira }) });
+  return codigo;
+}
+async function desvincularTelegramRemote(id) {
+  const [row] = await sb(`personal?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ telegram_chat_id: null, telegram_link_code: null, telegram_link_expira: null }) });
   return mapPersonal(row);
 }
 function personalPayload(form) {
@@ -918,6 +972,7 @@ export default function EvolucionaApp() {
   const [modal, setModal] = useState(null); // {mode:'new'|'edit', event}
   const [detail, setDetail] = useState(null); // event being viewed
   const [personalModal, setPersonalModal] = useState(null); // {mode, person}
+  const [telegramVinculoModal, setTelegramVinculoModal] = useState(null); // {persona, codigo}
   const [bibModal, setBibModal] = useState(null); // {mode, item}
   const [festivoModal, setFestivoModal] = useState(false);
   const [reglaPersonalModal, setReglaPersonalModal] = useState(false);
@@ -1125,6 +1180,23 @@ export default function EvolucionaApp() {
       showToast("Estado actualizado en Supabase");
     } catch (err) {
       showToast(`No se pudo actualizar: ${err.message}`, "warn");
+    }
+  }
+  async function generarVinculoTelegram(persona) {
+    try {
+      const codigo = await generarVinculoTelegramRemote(persona.id);
+      setTelegramVinculoModal({ persona, codigo });
+    } catch (err) {
+      showToast(`No se pudo generar el código: ${err.message}`, "warn");
+    }
+  }
+  async function desvincularTelegram(id) {
+    try {
+      const updated = await desvincularTelegramRemote(id);
+      setPersonal((prev) => prev.map((p) => (p.id === id ? updated : p)));
+      showToast("Telegram desvinculado", "warn");
+    } catch (err) {
+      showToast(`No se pudo desvincular: ${err.message}`, "warn");
     }
   }
   async function savePersonal(form) {
@@ -1490,6 +1562,7 @@ export default function EvolucionaApp() {
     events, setEvents, personal, setPersonal, biblioteca, weekStart, weekDays, weekOffset, setWeekOffset,
     calMode, setCalMode, monthOffset, setMonthOffset, setModal, detail, setDetail, deleteEvent,
     toggleEstado, showToast, setView, saving, isMaestro, session, eliminarTurnosDeFechas,
+    generarVinculoTelegram, desvincularTelegram, telegramVinculoModal, setTelegramVinculoModal,
     servicios, servicioActualId, servicioModal, setServicioModal, servicioSelectorAbierto, setServicioSelectorAbierto,
     cambiarServicio, crearServicio, renombrarServicio,
     personalModal, setPersonalModal, savePersonal, deletePersonal,
@@ -1658,6 +1731,7 @@ export default function EvolucionaApp() {
       {plantillaModal && <NuevaPlantillaModal ctx={ctx} onClose={() => setPlantillaModal(false)} />}
       {temaModal && <TemaModal ctx={ctx} onClose={() => setTemaModal(false)} />}
       {servicioModal && <ServicioModal ctx={ctx} onClose={() => setServicioModal(false)} />}
+      {telegramVinculoModal && <TelegramVinculoModal ctx={ctx} onClose={() => setTelegramVinculoModal(null)} />}
       {formacionModal && <FormacionModal ctx={ctx} onClose={() => setFormacionModal(false)} />}
       {testModal && <TestModal ctx={ctx} onClose={() => setTestModal(null)} />}
       {gestionarTestModal && <GestionarTestModal ctx={ctx} onClose={() => setGestionarTestModal(null)} />}
@@ -3121,10 +3195,15 @@ function MonthView({ ctx, types }) {
 
 /* ============================== PERSONAL ============================== */
 function Personal({ ctx }) {
-  const { personal, toggleEstado, isMaestro, setPersonalModal, deletePersonal } = ctx;
+  const { personal, toggleEstado, isMaestro, setPersonalModal, deletePersonal, generarVinculoTelegram, desvincularTelegram } = ctx;
   function confirmDelete(p) {
     if (window.confirm(`¿Eliminar a ${p.nombre}? Sus turnos y actividades pasadas quedarán sin responsable asignado.`)) {
       deletePersonal(p.id);
+    }
+  }
+  function confirmDesvincular(p) {
+    if (window.confirm(`¿Desvincular Telegram de ${p.nombre}? Dejará de recibir recordatorios de turno hasta que se vincule de nuevo.`)) {
+      desvincularTelegram(p.id);
     }
   }
   return (
@@ -3149,7 +3228,7 @@ function Personal({ ctx }) {
         <table className="w-full text-[13px]">
           <thead>
             <tr className="text-left" style={{ color: T.muted }}>
-              {["Nombre", "Cargo", "Área", "Horas/sem", "Estado", ""].map((h) => (
+              {["Nombre", "Cargo", "Área", "Horas/sem", "Estado", "Recordatorios", ""].map((h) => (
                 <th key={h} className="px-5 py-2 font-medium text-[11.5px] uppercase tracking-wide">{h}</th>
               ))}
             </tr>
@@ -3166,15 +3245,33 @@ function Personal({ ctx }) {
                     {p.estado}
                   </span>
                 </td>
+                <td className="px-5 py-3">
+                  {p.telegramVinculado ? (
+                    <span className="flex items-center gap-1 px-2.5 py-1 rounded-full text-[11.5px] font-semibold w-fit" style={{ background: T.primarySoft, color: T.primaryDark }}>
+                      <CheckCircle2 size={12} /> Telegram vinculado
+                    </span>
+                  ) : (
+                    <span className="text-[11.5px]" style={{ color: T.muted }}>Sin vincular</span>
+                  )}
+                </td>
                 <td className="px-5 py-3 text-right">
                   {isMaestro && (
-                    <div className="flex justify-end gap-2">
+                    <div className="flex justify-end gap-2 flex-wrap">
                       <button onClick={() => setPersonalModal({ mode: "edit", person: p })} className="ev-btn text-[12px] px-2.5 py-1" style={{ border: `1px solid ${T.border}` }}>
                         <Pencil size={12} /> Editar
                       </button>
                       <button onClick={() => toggleEstado(p.id)} className="ev-btn text-[12px] px-2.5 py-1" style={{ border: `1px solid ${T.border}` }}>
                         {p.estado === "activo" ? "Desactivar" : "Activar"}
                       </button>
+                      {p.telegramVinculado ? (
+                        <button onClick={() => confirmDesvincular(p)} className="ev-btn text-[12px] px-2.5 py-1" style={{ border: `1px solid ${T.border}` }}>
+                          Desvincular Telegram
+                        </button>
+                      ) : (
+                        <button onClick={() => generarVinculoTelegram(p)} className="ev-btn text-[12px] px-2.5 py-1 text-white" style={{ background: "#229ED9" }}>
+                          Vincular Telegram
+                        </button>
+                      )}
                       <button onClick={() => confirmDelete(p)} className="ev-btn text-[12px] px-2.5 py-1" style={{ background: T.dangerSoft, color: T.danger }}>
                         <Trash2 size={12} /> Eliminar
                       </button>
