@@ -301,6 +301,30 @@ const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://zvyuqbrvix
 const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_KEY || "sb_publishable_G53F0OOT0-BzQlnXmen2XA_uZ1Yn9A9";
 let ACCESS_TOKEN = null; // token de sesión de Supabase Auth; null = sin iniciar sesión
 let REFRESH_TOKEN = null; // se usa para renovar ACCESS_TOKEN sin pedir contraseña de nuevo
+const SESION_LOCAL_KEY = "evoluciona_sesion";
+// Guarda los tokens en el dispositivo para que, si el sistema operativo del
+// celular "mata" la app en segundo plano (algo muy común en PWAs móviles),
+// al volver a abrirla se recupere la sesión sola en vez de pedir clave de nuevo.
+function guardarSesionLocal() {
+  try {
+    if (typeof window !== "undefined" && ACCESS_TOKEN && REFRESH_TOKEN) {
+      window.localStorage.setItem(SESION_LOCAL_KEY, JSON.stringify({ access_token: ACCESS_TOKEN, refresh_token: REFRESH_TOKEN }));
+    }
+  } catch (_) { /* si el navegador bloquea localStorage, simplemente no persiste */ }
+}
+function borrarSesionLocal() {
+  try {
+    if (typeof window !== "undefined") window.localStorage.removeItem(SESION_LOCAL_KEY);
+  } catch (_) {}
+}
+function leerSesionLocal() {
+  try {
+    if (typeof window === "undefined") return null;
+    return JSON.parse(window.localStorage.getItem(SESION_LOCAL_KEY) || "null");
+  } catch (_) {
+    return null;
+  }
+}
 let onSesionExpirada = () => {}; // la app raíz la reemplaza para cerrar sesión si el refresh también falla
 let refrescoEnCurso = null; // evita refrescar varias veces en paralelo
 let SERVICIO_ACTUAL = null; // id del servicio seleccionado; lo usan los inserts para etiquetar los datos nuevos
@@ -312,6 +336,7 @@ async function refrescarSesion() {
       .then((data) => {
         ACCESS_TOKEN = data.access_token;
         REFRESH_TOKEN = data.refresh_token;
+        guardarSesionLocal();
         return data;
       })
       .finally(() => { refrescoEnCurso = null; });
@@ -920,6 +945,42 @@ function useToast() {
 export default function EvolucionaApp() {
   const [theme, setTheme] = useTheme();
   const [session, setSession] = useState(null); // { email, rol }
+  const [recuperandoSesion, setRecuperandoSesion] = useState(true);
+
+  // Al abrir la app (o volver a ella tras haber estado en segundo plano en
+  // el celular, donde el sistema operativo suele "matar" la pestaña de la
+  // PWA), intenta recuperar la sesión guardada en el dispositivo en vez de
+  // pedir la clave de nuevo cada vez.
+  React.useEffect(() => {
+    (async () => {
+      try {
+        const guardada = leerSesionLocal();
+        if (guardada?.access_token && guardada?.refresh_token) {
+          ACCESS_TOKEN = guardada.access_token;
+          REFRESH_TOKEN = guardada.refresh_token;
+          let propio = await fetchOwnUsuario().catch(() => null);
+          if (!propio) {
+            // El token de acceso ya venció (pasa si la app estuvo cerrada
+            // más de una hora); se intenta renovar una vez con el de refresco.
+            try {
+              await refrescarSesion();
+              propio = await fetchOwnUsuario().catch(() => null);
+            } catch (_) {
+              propio = null;
+            }
+          }
+          if (propio && propio.activo !== false) {
+            setSession({ id: propio.id, email: propio.correo, rol: propio.rol || "lector" });
+          } else {
+            ACCESS_TOKEN = null;
+            REFRESH_TOKEN = null;
+            borrarSesionLocal();
+          }
+        }
+      } catch (_) { /* si algo falla, simplemente se pide iniciar sesión normalmente */ }
+      setRecuperandoSesion(false);
+    })();
+  }, []);
   const [servicios, setServicios] = useState([]);
   const [servicioActualId, setServicioActualId] = useState(null);
   const [servicioModal, setServicioModal] = useState(false);
@@ -1072,6 +1133,7 @@ export default function EvolucionaApp() {
     onSesionExpirada = () => {
       ACCESS_TOKEN = null;
       REFRESH_TOKEN = null;
+      borrarSesionLocal();
       setSession(null);
       showToast("Tu sesión expiró, vuelve a iniciar sesión", "warn");
     };
@@ -1103,6 +1165,7 @@ export default function EvolucionaApp() {
   function handleLogout() {
     ACCESS_TOKEN = null;
     REFRESH_TOKEN = null;
+    borrarSesionLocal();
     setSession(null);
     setEvents([]);
     setPersonal([]);
@@ -1112,6 +1175,18 @@ export default function EvolucionaApp() {
 
   if (recoveryToken) {
     return <ResetPasswordScreen token={recoveryToken} theme={theme} setTheme={setTheme} onDone={() => { window.location.hash = ""; setRecoveryToken(null); }} />;
+  }
+
+  if (recuperandoSesion) {
+    return (
+      <div data-theme={theme} style={{ background: T.base, color: T.ink, fontFamily: "'Inter', sans-serif" }} className="ev-root relative w-full min-h-[720px] flex items-center justify-center transition-colors duration-200">
+        <style>{THEME_CSS}</style>
+        <style>{APP_BASE_CSS}</style>
+        <div className="w-8 h-8 rounded-lg flex items-center justify-center animate-pulse" style={{ background: T.primary }}>
+          <LogoMark size={16} color="#fff" />
+        </div>
+      </div>
+    );
   }
 
   if (!session) {
@@ -1767,6 +1842,7 @@ function LoginScreen({ onLogin, theme, setTheme }) {
         if (res.access_token) {
           ACCESS_TOKEN = res.access_token;
           REFRESH_TOKEN = res.refresh_token;
+          guardarSesionLocal();
           try {
             await sb("usuarios", {
               method: "POST",
@@ -1783,6 +1859,7 @@ function LoginScreen({ onLogin, theme, setTheme }) {
         const res = await authSignIn(form.correo, form.password);
         ACCESS_TOKEN = res.access_token;
         REFRESH_TOKEN = res.refresh_token;
+        guardarSesionLocal();
         let propio = await fetchOwnUsuario();
         if (!propio) {
           // Pasa cuando el registro exigió confirmar el correo: la fila en
@@ -1799,6 +1876,7 @@ function LoginScreen({ onLogin, theme, setTheme }) {
         if (propio && propio.activo === false) {
           ACCESS_TOKEN = null;
           REFRESH_TOKEN = null;
+          borrarSesionLocal();
           setError("Tu cuenta fue desactivada por un administrador. Contacta a un usuario Maestro.");
           return;
         }
@@ -2527,7 +2605,8 @@ function TurnosMesGrid({ ctx, filtroPersonalId }) {
       <div className="grid grid-cols-7 text-center py-2 border-b" style={{ borderColor: T.border }}>
         {DIA_LABEL.map((d) => <p key={d} className="text-[11px] font-medium" style={{ color: T.muted }}>{d}</p>)}
       </div>
-      <div className="overflow-x-auto ev-scroll" style={{ minWidth: 900 }}>
+      <div className="overflow-x-auto ev-scroll">
+        <div style={{ minWidth: 900 }}>
         {semanas.map((semana, semIdx) => (
           <div key={semIdx}>
             {isMaestro && (
@@ -2597,6 +2676,7 @@ function TurnosMesGrid({ ctx, filtroPersonalId }) {
             </div>
           </div>
         ))}
+        </div>
       </div>
       <div className="flex items-center gap-2 px-4 py-2 text-[11px] border-t" style={{ borderColor: T.border, color: T.muted }}>
         <span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ background: T.accentSoft }} /> Día festivo
