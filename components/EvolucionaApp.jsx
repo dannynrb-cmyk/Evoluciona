@@ -1402,18 +1402,7 @@ export default function EvolucionaApp() {
     setSubiendoArchivo(true);
     try {
       const { path, url } = await subirArchivoFormacion(file);
-      let contenidoTexto = "";
-      if (form.tipo === "pdf") {
-        try {
-          const res = await fetch("/api/extraer-pdf", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url }) });
-          const data = await res.json().catch(() => ({}));
-          if (res.ok) contenidoTexto = data.texto || "";
-          else showToast(`El PDF se subió, pero no se pudo leer su contenido para Evo: ${data.error || res.status}`, "warn");
-        } catch (_) {
-          showToast("El PDF se subió, pero no se pudo leer su contenido para Evo (revisa tu conexión).", "warn");
-        }
-      }
-      const saved = await insertFormacionRemote({ ...form, archivoPath: path, archivoUrl: url, autor: session?.email || "", contenidoTexto });
+      const saved = await insertFormacionRemote({ ...form, archivoPath: path, archivoUrl: url, autor: session?.email || "" });
       setFormacion((prev) => [saved, ...prev]);
       setFormacionModal(false);
       showToast("Contenido publicado");
@@ -4817,7 +4806,7 @@ function FormacionModal({ ctx, onClose }) {
           </Field>
           <p className="text-[11px]" style={{ color: T.muted }}>
             El plan gratuito tiene 1 GB de espacio en total para archivos — para videos, prefiere clips cortos (1-3 minutos) para no llenarlo rápido.
-            {form.tipo === "pdf" && " Al subirlo, Evo va a leer el contenido de adentro para poder responder preguntas sobre él."}
+            {(form.tipo === "pdf" || form.tipo === "infografia" || form.tipo === "mapa_mental") && " Evo puede leer este archivo directamente cuando le pregunten sobre él."}
           </p>
         </div>
         <div className="flex justify-end gap-2 mt-5">
