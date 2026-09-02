@@ -3301,7 +3301,7 @@ function Personal({ ctx }) {
       </div>
       {!isMaestro && (
         <div className="flex items-center gap-2 px-5 py-2.5 text-[12px]" style={{ background: T.accentSoft, color: T.accentInk }}>
-          <Lock size={13} /> Modo lectura: solo un usuario Maestro puede registrar o editar personal.
+          <Lock size={13} /> Modo lectura: solo un usuario Maestro puede registrar o editar personal. Sí puedes vincular o desvincular Telegram para recibir recordatorios de turno.
         </div>
       )}
       <div className="overflow-x-auto ev-scroll">
@@ -3335,28 +3335,32 @@ function Personal({ ctx }) {
                   )}
                 </td>
                 <td className="px-5 py-3 text-right">
-                  {isMaestro && (
-                    <div className="flex justify-end gap-2 flex-wrap">
-                      <button onClick={() => setPersonalModal({ mode: "edit", person: p })} className="ev-btn text-[12px] px-2.5 py-1" style={{ border: `1px solid ${T.border}` }}>
-                        <Pencil size={12} /> Editar
-                      </button>
-                      <button onClick={() => toggleEstado(p.id)} className="ev-btn text-[12px] px-2.5 py-1" style={{ border: `1px solid ${T.border}` }}>
-                        {p.estado === "activo" ? "Desactivar" : "Activar"}
-                      </button>
-                      {p.telegramVinculado ? (
-                        <button onClick={() => confirmDesvincular(p)} className="ev-btn text-[12px] px-2.5 py-1" style={{ border: `1px solid ${T.border}` }}>
-                          Desvincular Telegram
+                  <div className="flex justify-end gap-2 flex-wrap">
+                    {isMaestro && (
+                      <>
+                        <button onClick={() => setPersonalModal({ mode: "edit", person: p })} className="ev-btn text-[12px] px-2.5 py-1" style={{ border: `1px solid ${T.border}` }}>
+                          <Pencil size={12} /> Editar
                         </button>
-                      ) : (
-                        <button onClick={() => generarVinculoTelegram(p)} className="ev-btn text-[12px] px-2.5 py-1 text-white" style={{ background: "#229ED9" }}>
-                          Vincular Telegram
+                        <button onClick={() => toggleEstado(p.id)} className="ev-btn text-[12px] px-2.5 py-1" style={{ border: `1px solid ${T.border}` }}>
+                          {p.estado === "activo" ? "Desactivar" : "Activar"}
                         </button>
-                      )}
+                      </>
+                    )}
+                    {p.telegramVinculado ? (
+                      <button onClick={() => confirmDesvincular(p)} className="ev-btn text-[12px] px-2.5 py-1" style={{ border: `1px solid ${T.border}` }}>
+                        Desvincular Telegram
+                      </button>
+                    ) : (
+                      <button onClick={() => generarVinculoTelegram(p)} className="ev-btn text-[12px] px-2.5 py-1 text-white" style={{ background: "#229ED9" }}>
+                        Vincular Telegram
+                      </button>
+                    )}
+                    {isMaestro && (
                       <button onClick={() => confirmDelete(p)} className="ev-btn text-[12px] px-2.5 py-1" style={{ background: T.dangerSoft, color: T.danger }}>
                         <Trash2 size={12} /> Eliminar
                       </button>
-                    </div>
-                  )}
+                    )}
+                  </div>
                 </td>
               </tr>
             ))}
