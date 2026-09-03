@@ -66,11 +66,18 @@ export async function POST(request) {
       return Response.json({ ok: true });
     }
 
-    await fetch(`${SUPABASE_URL}/rest/v1/personal?id=eq.${persona.id}`, {
+    const patchRes = await fetch(`${SUPABASE_URL}/rest/v1/personal?id=eq.${persona.id}`, {
       method: "PATCH",
       headers,
       body: JSON.stringify({ telegram_chat_id: String(chatId), telegram_link_code: null, telegram_link_expira: null }),
     });
+
+    if (!patchRes.ok) {
+      const detalle = await patchRes.text().catch(() => "");
+      console.error("Telegram webhook: fallo guardando vínculo ->", patchRes.status, detalle);
+      await enviarMensaje(chatId, "Hubo un problema técnico guardando tu vinculación. Pide un código nuevo desde Evoluciona (Personal → Vincular Telegram) e inténtalo de nuevo. Si sigue fallando, avísale al administrador.");
+      return Response.json({ ok: false, error: detalle }, { status: 500 });
+    }
 
     await enviarMensaje(chatId, `¡Listo, ${persona.nombre}! Quedaste vinculado a Evoluciona. Te voy a escribir aquí cuando tengas un turno programado para el día siguiente.`);
     return Response.json({ ok: true });
