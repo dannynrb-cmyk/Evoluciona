@@ -302,12 +302,12 @@ const APP_BASE_CSS = `
 `;
 
 const ACTIVITY_TYPES = {
-  terapeutico: { label: "Grupo Terapéutico", color: "#0EA5E9", icon: HeartPulse },
-  turno_dia: { label: "Turno Día", color: "#2563EB", icon: Sun },
-  turno_noche: { label: "Turno Noche", color: "#7C3AED", icon: Moon },
-  administrativo: { label: "Administrativo", color: "#D97706", icon: ClipboardList },
+  terapeutico: { label: "Grupo Terapéutico", color: "#0891B2", icon: HeartPulse },
+  turno_dia: { label: "Turno Día", color: "#CA8A04", icon: Sun },
+  turno_noche: { label: "Turno Noche", color: "#4F46E5", icon: Moon },
+  administrativo: { label: "Administrativo", color: "#64748B", icon: ClipboardList },
   capacitacion: { label: "Capacitación", color: "#EA580C", icon: GraduationCap },
-  reunion: { label: "Reunión", color: "#64748B", icon: Users2 },
+  reunion: { label: "Reunión", color: "#78716C", icon: Users2 },
 };
 
 /* ============================== SUPABASE ============================== */
@@ -2931,14 +2931,22 @@ function TurnosCalendario({ ctx }) {
 
 function TurnoMiniBox({ tipo, chips, onChipClick, min, reglas, marcarExtra }) {
   const color = ACTIVITY_TYPES[tipo].color;
+  const Icon = ACTIVITY_TYPES[tipo].icon;
   const falta = typeof min === "number" && chips.length < min;
   const personasDelTurno = chips.map((c) => personById(c.personalId)).filter(Boolean);
   const sinAcompanamiento = reglas?.operadorRequiereAuxiliar
     && personasDelTurno.some((p) => esOperador(p.cargo, reglas))
     && !personasDelTurno.some((p) => esAuxiliar(p.cargo, reglas));
   return (
-    <div className="rounded px-1.5 py-1" style={{ background: `${color}14`, outline: (falta || sinAcompanamiento) ? `1px solid ${T.danger}` : "none" }}>
+    <div
+      className="rounded-lg px-2 py-1.5"
+      style={{
+        background: (falta || sinAcompanamiento) ? T.dangerSoft : `color-mix(in srgb, ${color} 7%, ${T.surface})`,
+        outline: (falta || sinAcompanamiento) ? `1px solid ${T.danger}` : "none",
+      }}
+    >
       <p className="text-[10.5px] font-semibold uppercase tracking-wide flex items-center gap-1" style={{ color }}>
+        <Icon size={11} />
         {tipo === "turno_dia" ? "Día" : "Noche"}
         {(falta || sinAcompanamiento) && <AlertTriangle size={10} style={{ color: T.danger }} />}
       </p>
@@ -3201,7 +3209,7 @@ function WeekView({ ctx, types }) {
                     key={h}
                     onClick={() => isMaestro && ctx.setModal({ mode: "new", event: null, defaultType: types[0], prefill: { date: dISO, start: h, end: h + 1 } })}
                     className={`absolute w-full border-t ${isMaestro ? "hover:bg-black/[0.02] cursor-pointer" : ""}`}
-                    style={{ top: (h - HOUR_START) * ROW_H, height: ROW_H, borderColor: "#EEF1EF" }}
+                    style={{ top: (h - HOUR_START) * ROW_H, height: ROW_H, borderColor: T.border }}
                   />
                 ))}
                 {calcularColumnasSolapadas(dayEvents).map((e) => {
@@ -3220,7 +3228,7 @@ function WeekView({ ctx, types }) {
                         top, height: alto,
                         left: `calc(${e.col * anchoPct}% + 2px)`,
                         width: `calc(${anchoPct}% - 4px)`,
-                        background: `${color}17`, borderLeft: `3px solid ${color}`,
+                        background: `color-mix(in srgb, ${color} 10%, ${T.surface})`, borderLeft: `3px solid ${color}`,
                       }}
                     >
                       <p className="text-[12.5px] font-semibold leading-snug line-clamp-2 flex items-start gap-1" style={{ color: T.ink }}>
@@ -4669,7 +4677,7 @@ function PlantillaSemanalEditor({ ctx, plantilla }) {
                 )}
               </div>
               {itemsDia.map((it) => (
-                <div key={it.id} className="rounded-lg px-2.5 py-2" style={{ background: `${ACTIVITY_TYPES[it.tipo].color}14`, borderLeft: `3px solid ${ACTIVITY_TYPES[it.tipo].color}` }}>
+                <div key={it.id} className="rounded-lg px-2.5 py-2" style={{ background: `color-mix(in srgb, ${ACTIVITY_TYPES[it.tipo].color} 8%, ${T.surface})`, borderLeft: `3px solid ${ACTIVITY_TYPES[it.tipo].color}` }}>
                   <div className="flex items-start justify-between gap-1">
                     <p className="text-[12.5px] font-semibold">{it.nombre}</p>
                     {isMaestro && (
