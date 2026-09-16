@@ -2941,8 +2941,9 @@ function TurnoMiniBox({ tipo, chips, onChipClick, min, reglas, marcarExtra }) {
     <div
       className="rounded-lg px-2 py-1.5"
       style={{
-        background: (falta || sinAcompanamiento) ? T.dangerSoft : `color-mix(in srgb, ${color} 7%, ${T.surface})`,
-        outline: (falta || sinAcompanamiento) ? `1px solid ${T.danger}` : "none",
+        background: (falta || sinAcompanamiento) ? T.dangerSoft : `color-mix(in srgb, ${color} 6%, ${T.surface})`,
+        borderLeft: `3px solid ${(falta || sinAcompanamiento) ? T.danger : color}`,
+        outline: "none",
       }}
     >
       <p className="text-[10.5px] font-semibold uppercase tracking-wide flex items-center gap-1" style={{ color }}>
@@ -3119,7 +3120,7 @@ function Legend({ types }) {
 
 const HOUR_START = 6;
 const HOUR_END = 24;
-const ROW_H = 72;
+const ROW_H = 60;
 
 // Cuando dos o más actividades coinciden en el mismo horario (ej. dos grupos
 // distintos a las 8am), esta función les asigna columnas para mostrarse una
@@ -3218,12 +3219,12 @@ function WeekView({ ctx, types }) {
                   const color = ACTIVITY_TYPES[e.type].color;
                   const Icon = ACTIVITY_TYPES[e.type].icon;
                   const anchoPct = 100 / e.totalCols;
-                  const alto = Math.max(bottom - top, 40);
+                  const alto = Math.max(bottom - top, 32);
                   return (
                     <div
                       key={e.id}
                       onClick={(ev) => { ev.stopPropagation(); setDetail(e); }}
-                      className="absolute rounded-md px-2 py-1.5 cursor-pointer overflow-hidden hover:shadow-md hover:z-10 transition-shadow"
+                      className="absolute rounded-md px-2 py-1 cursor-pointer overflow-hidden hover:shadow-md hover:z-10 transition-shadow"
                       style={{
                         top, height: alto,
                         left: `calc(${e.col * anchoPct}% + 2px)`,
@@ -3235,7 +3236,7 @@ function WeekView({ ctx, types }) {
                         <Icon size={12} className="shrink-0 mt-[2.5px]" style={{ color }} />
                         <span>{e.title}</span>
                       </p>
-                      {alto >= 46 && <p className="text-[11px] truncate mt-0.5" style={{ color: T.muted }}>{personName(e.personalId)}</p>}
+                      {alto >= 40 && <p className="text-[11px] truncate mt-0.5" style={{ color: T.muted }}>{personName(e.personalId)}</p>}
                       {e.end > HOUR_END && <p className="text-[9.5px] font-medium" style={{ color }}>continúa mañana ↴</p>}
                     </div>
                   );
