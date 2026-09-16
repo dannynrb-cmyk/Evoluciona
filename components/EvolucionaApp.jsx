@@ -1,4 +1,5 @@
 "use client";
+"use client";
 import React, { useMemo, useState } from "react";
 import {
   LayoutDashboard,
@@ -2476,6 +2477,12 @@ function generarPropuestaTurnos({ personal, eventosExistentes, reglas, festivos,
           .filter((p) => conteo[p.id].horas + horasEfectivas({ type: tipo, start, end }) <= (p.horas || reglas.horasSemanaObjetivo))
           .sort((a, b) => {
             const ca = conteo[a.id], cb = conteo[b.id];
+            // Reparto por TOTAL de turnos de la semana (día+noche), no solo del
+            // mismo tipo: así un cargo escaso (ej. un solo operador) no se agota
+            // cubriendo únicamente turnos de día los primeros días, dejando la
+            // segunda mitad de la semana sin nadie de ese cargo disponible.
+            const totalA = ca.turno_dia + ca.turno_noche, totalB = cb.turno_dia + cb.turno_noche;
+            if (totalA !== totalB) return totalA - totalB;
             if (ca[tipo] !== cb[tipo]) return ca[tipo] - cb[tipo];
             return ca.horas - cb.horas;
           });
@@ -2483,14 +2490,33 @@ function generarPropuestaTurnos({ personal, eventosExistentes, reglas, festivos,
         let elegidos = [...fijos, ...candidatos.slice(0, Math.max(0, requerido - fijos.length))];
 
         if (reglas.operadorRequiereAuxiliar && requerido >= 2) {
-          const rolesAVerificar = [
-            { esRol: (c) => esOperador(c, reglas), motivo: "sin operador terapéutico en el turno" },
-            { esRol: (c) => esAuxiliar(c, reglas), motivo: "sin auxiliar de compañía para el operador" },
-          ];
-          rolesAVerificar.forEach(({ esRol, motivo }) => {
-            const hayRol = elegidos.some((p) => esRol(p.cargo));
-            if (hayRol) return;
-            const refuerzo = candidatos.find((p) => esRol(p.cargo) && !elegidos.includes(p));
+          // Regla real: nunca dos operadores terapéuticos juntos en el mismo
+          // turno. Si hay un operador, necesita un auxiliar de compañía. Si no
+          // hay ningún operador disponible, dos (o más) auxiliares solos es
+          // perfectamente válido — no se exige operador en cada turno.
+          const operadoresEnTurno = elegidos.filter((p) => esOperador(p.cargo, reglas));
+
+          if (operadoresEnTurno.length > 1) {
+            // Sobran operadores: se reemplazan los excedentes por quien no sea
+            // operador (idealmente un auxiliar), priorizando quitar a quien no
+            // tenga una asignación fija.
+            let excedentes = operadoresEnTurno.slice(1); // se conserva solo el primero
+            excedentes.forEach((exceso) => {
+              if (fijos.some((f) => f.id === exceso.id)) return; // una regla fija "siempre" no se quita
+              const reemplazo = candidatos.find((p) => !esOperador(p.cargo, reglas) && !elegidos.includes(p));
+              if (reemplazo) {
+                elegidos = [...elegidos.filter((p) => p.id !== exceso.id), reemplazo];
+              } else {
+                elegidos = elegidos.filter((p) => p.id !== exceso.id);
+                faltantes.push({ date: dISO, type: tipo, faltan: 1, motivo: "se quitó un segundo operador (no pueden estar dos juntos) y no había con quién reemplazarlo" });
+              }
+            });
+          }
+
+          const hayOperadorAhora = elegidos.some((p) => esOperador(p.cargo, reglas));
+          const hayAuxiliarAhora = elegidos.some((p) => esAuxiliar(p.cargo, reglas));
+          if (hayOperadorAhora && !hayAuxiliarAhora) {
+            const refuerzo = candidatos.find((p) => esAuxiliar(p.cargo, reglas) && !elegidos.includes(p));
             if (refuerzo) {
               if (elegidos.length < requerido) {
                 // Hay cupo libre (aún no se llegó al mínimo): se suma sin pasarse.
@@ -2504,14 +2530,14 @@ function generarPropuestaTurnos({ personal, eventosExistentes, reglas, festivos,
                   elegidos = [...elegidos.filter((p) => p.id !== aQuitar.id), refuerzo];
                 } else {
                   // Todos los asignados son fijos ("siempre"); se agrega igual,
-                  // aunque implique un cupo extra, para no dejar el turno descubierto.
+                  // aunque implique un cupo extra, para no dejar al operador solo.
                   elegidos = [...elegidos, refuerzo];
                 }
               }
             } else {
-              faltantes.push({ date: dISO, type: tipo, faltan: 1, motivo });
+              faltantes.push({ date: dISO, type: tipo, faltan: 1, motivo: "sin auxiliar de compañía para el operador" });
             }
-          });
+          }
         }
 
         elegidos.forEach((p) => {
@@ -2936,22 +2962,24 @@ function TurnoMiniBox({ tipo, chips, onChipClick, min, reglas, marcarExtra }) {
   const Icon = ACTIVITY_TYPES[tipo].icon;
   const falta = typeof min === "number" && chips.length < min;
   const personasDelTurno = chips.map((c) => personById(c.personalId)).filter(Boolean);
+  const operadoresEnTurno = personasDelTurno.filter((p) => esOperador(p.cargo, reglas));
+  const dosOperadoresJuntos = reglas?.operadorRequiereAuxiliar && operadoresEnTurno.length > 1;
   const sinAcompanamiento = reglas?.operadorRequiereAuxiliar
-    && personasDelTurno.some((p) => esOperador(p.cargo, reglas))
+    && operadoresEnTurno.length === 1
     && !personasDelTurno.some((p) => esAuxiliar(p.cargo, reglas));
   return (
     <div
       className="rounded-lg px-2 py-1.5"
       style={{
-        background: (falta || sinAcompanamiento) ? T.dangerSoft : `color-mix(in srgb, ${color} 6%, ${T.surface})`,
-        borderLeft: `3px solid ${(falta || sinAcompanamiento) ? T.danger : color}`,
+        background: (falta || sinAcompanamiento || dosOperadoresJuntos) ? T.dangerSoft : `color-mix(in srgb, ${color} 6%, ${T.surface})`,
+        borderLeft: `3px solid ${(falta || sinAcompanamiento || dosOperadoresJuntos) ? T.danger : color}`,
         outline: "none",
       }}
     >
       <p className="text-[10.5px] font-semibold uppercase tracking-wide flex items-center gap-1" style={{ color }}>
         <Icon size={11} />
         {tipo === "turno_dia" ? "Día" : "Noche"}
-        {(falta || sinAcompanamiento) && <AlertTriangle size={10} style={{ color: T.danger }} />}
+        {(falta || sinAcompanamiento || dosOperadoresJuntos) && <AlertTriangle size={10} style={{ color: T.danger }} />}
       </p>
       {chips.length === 0 && <p className="text-[11px]" style={{ color: T.muted }}>—</p>}
       {chips.map((c, idx) => {
@@ -2971,7 +2999,8 @@ function TurnoMiniBox({ tipo, chips, onChipClick, min, reglas, marcarExtra }) {
         );
       })}
       {falta && <p className="text-[10px] font-medium" style={{ color: T.danger }}>Faltan {min - chips.length}</p>}
-      {!falta && sinAcompanamiento && <p className="text-[10px] font-medium" style={{ color: T.danger }}>Sin auxiliar</p>}
+      {!falta && dosOperadoresJuntos && <p className="text-[10px] font-medium" style={{ color: T.danger }}>2 operadores juntos</p>}
+      {!falta && !dosOperadoresJuntos && sinAcompanamiento && <p className="text-[10px] font-medium" style={{ color: T.danger }}>Sin auxiliar</p>}
     </div>
   );
 }
