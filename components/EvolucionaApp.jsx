@@ -36,6 +36,8 @@ import {
   HeartPulse,
   ClipboardList,
   Users2,
+  List,
+  LayoutGrid,
 } from "lucide-react";
 import {
   BarChart,
@@ -3163,21 +3165,44 @@ function WeekView({ ctx, types }) {
   const todayISO = toISO(TODAY);
   const hours = Array.from({ length: HOUR_END - HOUR_START }, (_, i) => HOUR_START + i);
   const filtered = events.filter((e) => types.includes(e.type));
+  const [vistaLista, setVistaLista] = useState(false);
 
   return (
     <div className="ev-card overflow-hidden print-area">
       <div className="flex items-center justify-between px-4 py-3 border-b" style={{ borderColor: T.border }}>
-        <button className="no-print p-1.5 rounded-lg" style={{ border: `1px solid ${T.border}` }} onClick={() => setWeekOffset((w) => w - 1)}>
-          <ChevronLeft size={16} />
-        </button>
+        <div className="no-print flex items-center gap-0.5 p-0.5 rounded-lg" style={{ background: T.base, border: `1px solid ${T.border}` }}>
+          <button
+            onClick={() => setVistaLista(false)}
+            title="Vista de cuadrícula (por hora)"
+            className="p-1.5 rounded-md"
+            style={{ background: !vistaLista ? T.surface : "transparent", boxShadow: !vistaLista ? T.shadow : "none" }}
+          >
+            <LayoutGrid size={14} style={{ color: !vistaLista ? T.primary : T.muted }} />
+          </button>
+          <button
+            onClick={() => setVistaLista(true)}
+            title="Vista de lista (compacta, sin espacios vacíos)"
+            className="p-1.5 rounded-md"
+            style={{ background: vistaLista ? T.surface : "transparent", boxShadow: vistaLista ? T.shadow : "none" }}
+          >
+            <List size={14} style={{ color: vistaLista ? T.primary : T.muted }} />
+          </button>
+        </div>
         <p className="ev-display font-semibold text-[14px]">
           {weekDays[0].toLocaleDateString("es-CO", { day: "numeric", month: "short" })} – {weekDays[6].toLocaleDateString("es-CO", { day: "numeric", month: "short", year: "numeric" })}
         </p>
-        <button className="no-print p-1.5 rounded-lg" style={{ border: `1px solid ${T.border}` }} onClick={() => setWeekOffset((w) => w + 1)}>
-          <ChevronRight size={16} />
-        </button>
+        <div className="no-print flex items-center gap-2">
+          <button className="p-1.5 rounded-lg" style={{ border: `1px solid ${T.border}` }} onClick={() => setWeekOffset((w) => w - 1)}>
+            <ChevronLeft size={16} />
+          </button>
+          <button className="p-1.5 rounded-lg" style={{ border: `1px solid ${T.border}` }} onClick={() => setWeekOffset((w) => w + 1)}>
+            <ChevronRight size={16} />
+          </button>
+        </div>
       </div>
-
+      {vistaLista ? (
+        <ListaSemanal weekDays={weekDays} filtered={filtered} todayISO={todayISO} setDetail={setDetail} />
+      ) : (
       <div className="overflow-x-auto ev-scroll">
         <div className="grid" style={{ gridTemplateColumns: "56px repeat(7, minmax(190px, 1fr))", minWidth: 1400 }}>
           <div />
@@ -3219,11 +3244,7 @@ function WeekView({ ctx, types }) {
                   const color = ACTIVITY_TYPES[e.type].color;
                   const Icon = ACTIVITY_TYPES[e.type].icon;
                   const anchoPct = 100 / e.totalCols;
-                  // La tarjeta nunca es más chica que lo mínimo legible, ni más
-                  // grande que lo que su contenido realmente necesita (título de
-                  // hasta 2 líneas + nombre) — así una actividad de 1h con poco
-                  // texto no deja un espacio vacío enorme debajo.
-                  const alto = Math.min(Math.max(bottom - top, 32), 54);
+                  const alto = Math.max(bottom - top, 32);
                   return (
                     <div
                       key={e.id}
@@ -3250,6 +3271,52 @@ function WeekView({ ctx, types }) {
           })}
         </div>
       </div>
+      )}
+    </div>
+  );
+}
+
+function ListaSemanal({ weekDays, filtered, todayISO, setDetail }) {
+  return (
+    <div className="grid sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7 divide-x" style={{ borderColor: T.border }}>
+      {weekDays.map((d, i) => {
+        const dISO = toISO(d);
+        const dayEvents = filtered
+          .filter((e) => e.date === dISO)
+          .sort((a, b) => a.start - b.start);
+        return (
+          <div key={i} className="flex flex-col" style={{ background: dISO === todayISO ? T.primarySoft : "transparent" }}>
+            <div className="px-3 py-2 text-center border-b" style={{ borderColor: T.border }}>
+              <p className="text-[11px] font-medium" style={{ color: T.muted }}>{DIA_LABEL[i]}</p>
+              <p className="ev-display font-semibold text-[15px]">{d.getDate()}</p>
+            </div>
+            <div className="flex flex-col gap-1.5 p-2">
+              {dayEvents.map((e) => {
+                const color = ACTIVITY_TYPES[e.type].color;
+                const Icon = ACTIVITY_TYPES[e.type].icon;
+                return (
+                  <button
+                    key={e.id}
+                    onClick={() => setDetail(e)}
+                    className="text-left rounded-md px-2 py-1.5 hover:shadow-sm transition-shadow"
+                    style={{ background: `color-mix(in srgb, ${color} 10%, ${T.surface})`, borderLeft: `3px solid ${color}` }}
+                  >
+                    <p className="ev-mono text-[10px]" style={{ color: T.muted }}>{fmtRange(e.start, e.end)}</p>
+                    <p className="text-[12px] font-semibold leading-snug flex items-start gap-1" style={{ color: T.ink }}>
+                      <Icon size={11} className="shrink-0 mt-[2.5px]" style={{ color }} />
+                      <span>{e.title}</span>
+                    </p>
+                    {e.personalId && <p className="text-[10.5px] truncate" style={{ color: T.muted }}>{personName(e.personalId)}</p>}
+                  </button>
+                );
+              })}
+              {dayEvents.length === 0 && (
+                <p className="text-[11.5px] text-center py-4" style={{ color: T.muted }}>Sin actividades.</p>
+              )}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
