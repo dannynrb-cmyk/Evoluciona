@@ -50,13 +50,15 @@ import html2canvas from "html2canvas";
 
 /* ============================== LOGO ============================== */
 // "Cometa": un destello que deja una estela en espiral — progreso + continuidad.
-function LogoMark({ size = 16, color = "#fff", tailColor }) {
+function LogoMark({ size = 16 }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 130 130" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path d="M50 100 a30 30 0 1 1 30 -68" stroke={tailColor || color} strokeWidth="9" fill="none" strokeLinecap="round" opacity="0.5" />
-      <path d="M82 26 L90 50 L114 58 L90 66 L82 90 L74 66 L50 58 L74 50 Z" fill={color} />
-      <circle cx="42" cy="98" r="5.5" fill="#E8A33D" />
-    </svg>
+    <img
+      src="/icons/logo-mark.png"
+      alt="Evoluciona"
+      width={size}
+      height={size}
+      style={{ width: size, height: size, objectFit: "contain", display: "block" }}
+    />
   );
 }
 
@@ -83,19 +85,19 @@ const T = {
 // cada pantalla — solo cambia el valor detrás de la variable.
 const THEME_CSS = `
   .ev-root {
-    --ev-ink: #14201D; --ev-base: #F5F7F5; --ev-surface: #FFFFFF;
-    --ev-primary: #1B6E58; --ev-primary-dark: #123F33; --ev-primary-soft: #E3EEEA;
-    --ev-accent: #C98A2E; --ev-accent-soft: #F7EEDD; --ev-accent-ink: #8A5A17;
-    --ev-border: #E1E5E1; --ev-muted: #5C6B65;
-    --ev-danger: #B14E33; --ev-danger-soft: #F7E7E1;
-    --ev-shadow: 0 1px 2px rgba(20,32,29,0.05), 0 4px 14px rgba(20,32,29,0.06);
+    --ev-ink: #0F172A; --ev-base: #F8FAFC; --ev-surface: #FFFFFF;
+    --ev-primary: #2563EB; --ev-primary-dark: #1D4ED8; --ev-primary-soft: #EFF6FF;
+    --ev-accent: #3B82F6; --ev-accent-soft: #EFF6FF; --ev-accent-ink: #1D4ED8;
+    --ev-border: #E2E8F0; --ev-muted: #64748B;
+    --ev-danger: #EF4444; --ev-danger-soft: #FEF2F2;
+    --ev-shadow: 0 1px 2px rgba(15,23,42,0.04), 0 4px 16px rgba(15,23,42,0.06);
   }
   .ev-root[data-theme="dark"] {
-    --ev-ink: #E8ECE9; --ev-base: #0E1613; --ev-surface: #182320;
-    --ev-primary: #34A184; --ev-primary-dark: #1B5C4A; --ev-primary-soft: #17332B;
-    --ev-accent: #D9A54B; --ev-accent-soft: #2E2515; --ev-accent-ink: #E8C179;
-    --ev-border: #2A342F; --ev-muted: #8B9992;
-    --ev-danger: #E2775A; --ev-danger-soft: #3A211A;
+    --ev-ink: #E2E8F0; --ev-base: #0B1220; --ev-surface: #131C2E;
+    --ev-primary: #3B82F6; --ev-primary-dark: #60A5FA; --ev-primary-soft: #1E293B;
+    --ev-accent: #60A5FA; --ev-accent-soft: #1E293B; --ev-accent-ink: #93C5FD;
+    --ev-border: #253248; --ev-muted: #8DA0BC;
+    --ev-danger: #F87171; --ev-danger-soft: #3A1E1E;
     --ev-shadow: 0 1px 2px rgba(0,0,0,0.35), 0 4px 16px rgba(0,0,0,0.4);
   }
 `;
@@ -270,17 +272,30 @@ function ServicioModal({ ctx, onClose }) {
 }
 
 const APP_BASE_CSS = `
-  @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+  * { font-family: 'Inter', -apple-system, sans-serif; }
   .ev-mono { font-family:'JetBrains Mono', monospace; }
-  .ev-display { font-family:'Space Grotesk', sans-serif; letter-spacing:-0.01em; }
+  .ev-display { font-family:'Inter', sans-serif; font-weight:700; letter-spacing:-0.015em; }
   .ev-scroll::-webkit-scrollbar{ width:8px; height:8px; }
   .ev-scroll::-webkit-scrollbar-thumb{ background:${T.border}; border-radius:8px; }
-  .ev-card{ background:${T.surface}; border:1px solid ${T.border}; border-radius:14px; box-shadow:${T.shadow}; transition:background-color .2s, border-color .2s; }
-  .ev-btn{ display:inline-flex; align-items:center; gap:6px; border-radius:9px; font-weight:600; transition:all .15s ease; cursor:pointer; }
-  .ev-btn:not(:disabled):hover{ filter:brightness(0.97); }
+  .ev-card{
+    background:${T.surface}; border:1px solid ${T.border}; border-radius:16px;
+    box-shadow:${T.shadow};
+    transition: box-shadow .2s ease, transform .2s ease, background-color .2s ease, border-color .2s ease;
+  }
+  .ev-card-hover:hover{ box-shadow: 0 2px 6px rgba(15,23,42,0.06), 0 10px 28px rgba(15,23,42,0.08); transform: translateY(-1px); }
+  .ev-btn{ display:inline-flex; align-items:center; gap:6px; border-radius:10px; font-weight:600; transition: filter .18s ease, transform .18s ease, background-color .18s ease, border-color .18s ease; cursor:pointer; }
+  .ev-btn:not(:disabled):hover{ filter:brightness(0.96); transform: translateY(-1px); }
+  .ev-btn:not(:disabled):active{ transform: translateY(0); filter:brightness(0.92); }
+  .ev-nav-item{ transition: background-color .18s ease, color .18s ease; }
   .ev-nav-item:hover{ background:${T.primarySoft}; }
-  input, select, textarea { transition: border-color .15s ease, box-shadow .15s ease; }
-  input:focus, select:focus, textarea:focus { outline:none; border-color:${T.primary} !important; box-shadow:0 0 0 3px color-mix(in srgb, ${T.primary} 18%, transparent); }
+  input, select, textarea { transition: border-color .18s ease, box-shadow .18s ease; }
+  input:focus, select:focus, textarea:focus { outline:none; border-color:${T.primary} !important; box-shadow:0 0 0 3px color-mix(in srgb, ${T.primary} 15%, transparent); }
+  .ev-card table thead th{ font-weight:600; letter-spacing:0.03em; }
+  .ev-card table tbody tr{ transition: background-color .15s ease; }
+  .ev-card table tbody tr:hover{ background: color-mix(in srgb, ${T.primary} 4%, ${T.surface}); }
+  @keyframes ev-fade-in { from { opacity:0; transform: translateY(4px); } to { opacity:1; transform: translateY(0); } }
+  .ev-fade-in { animation: ev-fade-in .2s ease; }
 `;
 
 const ACTIVITY_TYPES = {
@@ -1182,8 +1197,8 @@ export default function EvolucionaApp() {
       <div data-theme={theme} style={{ background: T.base, color: T.ink, fontFamily: "'Inter', sans-serif" }} className="ev-root relative w-full min-h-[720px] flex items-center justify-center transition-colors duration-200">
         <style>{THEME_CSS}</style>
         <style>{APP_BASE_CSS}</style>
-        <div className="w-8 h-8 rounded-lg flex items-center justify-center animate-pulse" style={{ background: T.primary }}>
-          <LogoMark size={16} color="#fff" />
+        <div className="w-8 h-8 rounded-lg flex items-center justify-center animate-pulse" style={{ background: T.primarySoft }}>
+          <LogoMark size={18} />
         </div>
       </div>
     );
@@ -1703,17 +1718,17 @@ export default function EvolucionaApp() {
       {/* Sidebar */}
       <aside
         className={`no-print group flex-col justify-between border-r transition-[width] duration-200 ease-in-out ${sidebarOpen ? "flex fixed inset-y-0 left-0 z-40 w-64" : "hidden"} lg:flex lg:fixed lg:inset-y-0 lg:left-0 lg:z-40 lg:w-16 lg:hover:w-60 lg:overflow-hidden`}
-        style={{ background: T.primaryDark, borderColor: T.border }}
+        style={{ background: T.surface, borderColor: T.border, boxShadow: "1px 0 0 rgba(15,23,42,0.02)" }}
       >
         <div>
           <div className="px-5 pt-6 pb-5">
             <div className="flex items-center gap-2">
-              <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: T.accent }}>
-                <LogoMark size={16} color={T.primaryDark} />
+              <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 overflow-hidden" style={{ background: T.primarySoft }}>
+                <LogoMark size={20} />
               </div>
-              <span className="ev-display text-white text-[19px] tracking-tight font-semibold whitespace-nowrap lg:opacity-0 lg:group-hover:opacity-100 transition-opacity duration-150">EVOLUCIONA</span>
+              <span className="ev-display text-[19px] tracking-tight font-bold whitespace-nowrap lg:opacity-0 lg:group-hover:opacity-100 transition-opacity duration-150" style={{ color: T.ink }}>EVOLUCIONA</span>
             </div>
-            <p className="text-[11px] mt-1 leading-snug whitespace-nowrap lg:opacity-0 lg:group-hover:opacity-100 transition-opacity duration-150" style={{ color: "#BFE0D6" }}>
+            <p className="text-[11px] mt-1 leading-snug whitespace-nowrap lg:opacity-0 lg:group-hover:opacity-100 transition-opacity duration-150" style={{ color: T.muted }}>
               Sistema inteligente de planificación de actividades y turnos
             </p>
           </div>
@@ -1728,8 +1743,8 @@ export default function EvolucionaApp() {
                   title={n.label}
                   className="ev-nav-item text-left px-3 py-2.5 rounded-lg flex items-center gap-3 text-[13.5px] font-medium"
                   style={{
-                    background: active ? "rgba(255,255,255,0.12)" : "transparent",
-                    color: active ? "#FFFFFF" : "#CFE3DC",
+                    background: active ? T.primarySoft : "transparent",
+                    color: active ? T.primary : T.muted,
                   }}
                 >
                   <Icon size={18} className="shrink-0" />
@@ -1739,10 +1754,10 @@ export default function EvolucionaApp() {
             })}
           </nav>
         </div>
-        <div className="px-4 pb-5 pt-4 border-t lg:hidden lg:group-hover:block" style={{ borderColor: "rgba(255,255,255,0.12)" }}>
-          <div className="rounded-lg p-3 whitespace-nowrap" style={{ background: "rgba(255,255,255,0.08)" }}>
-            <p className="text-[11px] font-semibold text-white">V1.0 · MVP</p>
-            <p className="text-[10.5px] mt-1" style={{ color: "#BFE0D6" }}>
+        <div className="px-4 pb-5 pt-4 border-t lg:hidden lg:group-hover:block" style={{ borderColor: T.border }}>
+          <div className="rounded-lg p-3 whitespace-nowrap" style={{ background: T.primarySoft }}>
+            <p className="text-[11px] font-semibold" style={{ color: T.primary }}>V1.0 · MVP</p>
+            <p className="text-[10.5px] mt-1" style={{ color: T.muted }}>
               V2 traerá asignación automática de turnos. V3, IA integrada.
             </p>
           </div>
@@ -1898,10 +1913,10 @@ function LoginScreen({ onLogin, theme, setTheme }) {
       </div>
       <form onSubmit={submit} className="ev-card w-full max-w-sm p-6" style={{ background: T.surface }}>
         <div className="flex items-center gap-2 mb-1">
-          <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: T.primary }}>
-            <LogoMark size={16} color="#fff" />
+          <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: T.primarySoft }}>
+            <LogoMark size={20} />
           </div>
-          <span style={{ fontFamily: "'Space Grotesk', sans-serif" }} className="text-[19px] font-semibold" >EVOLUCIONA</span>
+          <span className="ev-display text-[19px] font-bold" style={{ color: T.ink }}>EVOLUCIONA</span>
         </div>
         <p className="text-[12px] mb-5" style={{ color: T.muted }}>
           {mode === "signin" ? "Inicia sesión para continuar" : mode === "signup" ? "Crea tu cuenta de coordinador" : "Te enviaremos un enlace para restablecer tu contraseña"}
@@ -1988,10 +2003,10 @@ function ResetPasswordScreen({ token, theme, setTheme, onDone }) {
       </div>
       <div className="ev-card w-full max-w-sm p-6" style={{ background: T.surface }}>
         <div className="flex items-center gap-2 mb-1">
-          <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: T.primary }}>
-            <LogoMark size={16} color="#fff" />
+          <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: T.primarySoft }}>
+            <LogoMark size={20} />
           </div>
-          <span style={{ fontFamily: "'Space Grotesk', sans-serif" }} className="text-[19px] font-semibold">EVOLUCIONA</span>
+          <span className="ev-display text-[19px] font-bold" style={{ color: T.ink }}>EVOLUCIONA</span>
         </div>
 
         {ok ? (
@@ -4118,7 +4133,7 @@ function EventModal({ ctx, onClose, onSave, initial }) {
   );
 }
 
-const inputStyle = { width: "100%", border: `1px solid ${T.border}`, borderRadius: 9, padding: "8px 10px", fontSize: 13, background: T.surface, color: T.ink };
+const inputStyle = { width: "100%", border: `1px solid ${T.border}`, borderRadius: 10, padding: "10px 13px", fontSize: 13.5, background: T.surface, color: T.ink };
 
 function Field({ label, children }) {
   return (
@@ -4735,6 +4750,7 @@ const TIPO_FORMACION = { infografia: "Infografía", mapa_mental: "Mapa mental", 
 function FormacionContinua({ ctx }) {
   const { formacion, isMaestro, setFormacionModal, eliminarFormacion, session, vistos, preguntas, resultados, marcarVisto, setTestModal, setGestionarTestModal, setParticipacionModal } = ctx;
   const [busqueda, setBusqueda] = useState("");
+  const [imagenAmpliada, setImagenAmpliada] = useState(null); // {url, titulo}
   const term = normalizarTexto(busqueda);
   const formacionFiltrada = formacion.filter((f) => !term || normalizarTexto(f.titulo).includes(term) || normalizarTexto(f.descripcion).includes(term));
   return (
@@ -4765,6 +4781,7 @@ function FormacionContinua({ ctx }) {
           const miResultado = resultados.find((r) => r.formacionId === f.id && r.usuarioId === session?.id);
           const totalVistos = vistos.filter((v) => v.formacionId === f.id).length;
           const totalTests = resultados.filter((r) => r.formacionId === f.id).length;
+          const esImagen = f.tipo === "infografia" || f.tipo === "mapa_mental" || f.tipo === "otro";
           return (
             <div key={f.id} className="ev-card overflow-hidden flex flex-col">
               <div className="w-full flex items-center justify-center overflow-hidden" style={{ height: 150, background: T.base }}>
@@ -4776,7 +4793,16 @@ function FormacionContinua({ ctx }) {
                     <span className="text-[11px] font-semibold">Abrir PDF</span>
                   </a>
                 ) : (
-                  <img src={f.archivoUrl} alt={f.titulo} className="w-full h-full object-cover" />
+                  <button
+                    onClick={() => setImagenAmpliada({ url: f.archivoUrl, titulo: f.titulo })}
+                    className="w-full h-full relative group"
+                    title="Ver en grande"
+                  >
+                    <img src={f.archivoUrl} alt={f.titulo} className="w-full h-full object-cover" />
+                    <span className="absolute inset-0 flex items-center justify-center bg-black/0 group-hover:bg-black/30 transition-colors">
+                      <Search size={22} className="text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+                    </span>
+                  </button>
                 )}
               </div>
               <div className="p-3.5 flex flex-col gap-1.5 flex-1">
@@ -4785,6 +4811,11 @@ function FormacionContinua({ ctx }) {
                 </span>
                 <h4 className="font-semibold text-[13.5px]">{f.titulo}</h4>
                 {f.descripcion && <p className="text-[12px] line-clamp-3" style={{ color: T.muted }}>{f.descripcion}</p>}
+                {esImagen && (
+                  <button onClick={() => setImagenAmpliada({ url: f.archivoUrl, titulo: f.titulo })} className="text-[11.5px] font-semibold text-left w-fit" style={{ color: T.primary }}>
+                    Ver completa
+                  </button>
+                )}
                 <p className="text-[10.5px]" style={{ color: T.muted }}>
                   {f.autor ? `${f.autor} · ` : ""}{new Date(f.createdAt).toLocaleDateString("es-CO", { day: "numeric", month: "short", year: "numeric" })}
                 </p>
@@ -4833,6 +4864,28 @@ function FormacionContinua({ ctx }) {
           <p className="text-[12.5px] col-span-full text-center py-10" style={{ color: T.muted }}>Todavía no hay contenido publicado.</p>
         )}
       </div>
+      {imagenAmpliada && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
+          onClick={() => setImagenAmpliada(null)}
+        >
+          <button
+            onClick={() => setImagenAmpliada(null)}
+            className="absolute top-4 right-4 text-white p-2 rounded-full hover:bg-white/10"
+          >
+            <X size={22} />
+          </button>
+          <div className="flex flex-col items-center gap-3 max-w-full max-h-full" onClick={(e) => e.stopPropagation()}>
+            <img src={imagenAmpliada.url} alt={imagenAmpliada.titulo} className="max-w-full max-h-[80vh] object-contain rounded-lg" />
+            <div className="flex items-center gap-3">
+              <p className="text-white text-[13px] font-medium">{imagenAmpliada.titulo}</p>
+              <a href={imagenAmpliada.url} target="_blank" rel="noopener noreferrer" className="text-[12px] underline" style={{ color: "#93C5FD" }}>
+                Abrir en pestaña nueva
+              </a>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
