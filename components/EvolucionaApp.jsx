@@ -3219,7 +3219,11 @@ function WeekView({ ctx, types }) {
                   const color = ACTIVITY_TYPES[e.type].color;
                   const Icon = ACTIVITY_TYPES[e.type].icon;
                   const anchoPct = 100 / e.totalCols;
-                  const alto = Math.max(bottom - top, 32);
+                  // La tarjeta nunca es más chica que lo mínimo legible, ni más
+                  // grande que lo que su contenido realmente necesita (título de
+                  // hasta 2 líneas + nombre) — así una actividad de 1h con poco
+                  // texto no deja un espacio vacío enorme debajo.
+                  const alto = Math.min(Math.max(bottom - top, 32), 54);
                   return (
                     <div
                       key={e.id}
