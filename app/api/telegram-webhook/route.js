@@ -33,8 +33,40 @@ export async function POST(request) {
 
     const update = await request.json();
     const mensaje = update?.message;
-    if (!mensaje?.text || !mensaje?.chat?.id) {
+    if (!mensaje?.chat?.id) {
       return Response.json({ ok: true }); // nada que hacer (ej. un "sticker" o similar)
+    }
+
+    // Si el mensaje viene de un grupo (no de un chat privado), se registra
+    // como "grupo detectado" para poder vincularlo desde Configuración —
+    // sin importar qué haya escrito, cualquier mensaje sirve para detectarlo.
+    if (mensaje.chat.type === "group" || mensaje.chat.type === "supergroup") {
+      const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+      const headers = { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`, "Content-Type": "application/json", Prefer: "resolution=merge-duplicates" };
+      try {
+        const filaRes = await fetch(`${SUPABASE_URL}/rest/v1/configuracion_notificaciones?select=id,telegram_grupo_chat_id,telegram_grupo_confirmado&limit=1`, { headers });
+        const filas = filaRes.ok ? await filaRes.json() : [];
+        if (filas[0]) {
+          await fetch(`${SUPABASE_URL}/rest/v1/configuracion_notificaciones?id=eq.${filas[0].id}`, {
+            method: "PATCH",
+            headers,
+            body: JSON.stringify({
+              telegram_grupo_chat_id: String(mensaje.chat.id),
+              telegram_grupo_nombre: mensaje.chat.title || "Grupo sin nombre",
+              telegram_grupo_detectado_en: new Date().toISOString(),
+              // Si el chat_id cambia (ej. se probó con otro grupo), se pierde la confirmación anterior.
+              telegram_grupo_confirmado: filas[0].telegram_grupo_chat_id === String(mensaje.chat.id) ? filas[0].telegram_grupo_confirmado : false,
+            }),
+          });
+        }
+      } catch (err) {
+        console.error("Telegram webhook: fallo detectando grupo ->", err);
+      }
+      return Response.json({ ok: true });
+    }
+
+    if (!mensaje?.text) {
+      return Response.json({ ok: true });
     }
 
     const chatId = mensaje.chat.id;

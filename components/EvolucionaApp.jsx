@@ -1509,6 +1509,11 @@ export default function EvolucionaApp() {
       setAvisos((prev) => [saved, ...prev]);
       setAvisoModal(false);
       showToast("Aviso publicado");
+      fetch("/api/telegram-avisar-grupo", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${ACCESS_TOKEN}` },
+        body: JSON.stringify({ titulo: saved.titulo, mensaje: saved.mensaje, nivel: saved.nivel, autor: saved.autor }),
+      }).catch(() => {}); // si falla el envío a Telegram, el aviso ya quedó publicado igual
     } catch (err) {
       showToast(`No se pudo publicar: ${err.message}`, "warn");
     } finally {
@@ -3936,8 +3941,88 @@ function Configuracion({ ctx }) {
         </div>
       )}
 
+      {isMaestro && <TelegramGrupoConfig />}
+
       {festivoModal && <FestivoModal ctx={ctx} onClose={() => setFestivoModal(false)} />}
       {ctx.reglaPersonalModal && <ReglaPersonalModal ctx={ctx} onClose={() => ctx.setReglaPersonalModal(false)} />}
+    </div>
+  );
+}
+
+function TelegramGrupoConfig() {
+  const [estado, setEstado] = useState(null); // {configuracion} | null mientras carga
+  const [cargando, setCargando] = useState(true);
+  const [confirmando, setConfirmando] = useState(false);
+  const [error, setError] = useState(null);
+
+  async function cargarEstado() {
+    setCargando(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/telegram-grupo", { headers: { Authorization: `Bearer ${ACCESS_TOKEN}` } });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+      setEstado(data.configuracion);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setCargando(false);
+    }
+  }
+  React.useEffect(() => { cargarEstado(); }, []);
+
+  async function confirmar() {
+    setConfirmando(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/telegram-grupo", { method: "POST", headers: { Authorization: `Bearer ${ACCESS_TOKEN}` } });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+      await cargarEstado();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setConfirmando(false);
+    }
+  }
+
+  const vinculado = estado?.telegram_grupo_confirmado && estado?.telegram_grupo_chat_id;
+  const detectadoSinConfirmar = estado?.telegram_grupo_chat_id && !estado?.telegram_grupo_confirmado;
+
+  return (
+    <div className="ev-card p-5">
+      <h3 className="ev-display font-semibold text-[15px] mb-1">Grupo de Telegram para el tablero de avisos</h3>
+      <p className="text-[12px] mb-4" style={{ color: T.muted }}>
+        Cuando publiques un aviso en el Dashboard, también le va a llegar automáticamente a este grupo de Telegram.
+      </p>
+
+      {cargando ? (
+        <p className="text-[12.5px]" style={{ color: T.muted }}>Cargando…</p>
+      ) : vinculado ? (
+        <div className="flex items-center gap-2 px-3 py-2.5 rounded-lg text-[12.5px]" style={{ background: T.primarySoft, color: T.primaryDark }}>
+          <CheckCircle2 size={15} /> Vinculado a "{estado.telegram_grupo_nombre}"
+        </div>
+      ) : (
+        <div className="flex flex-col gap-3">
+          <ol className="text-[12.5px] flex flex-col gap-1 list-decimal pl-4" style={{ color: T.muted }}>
+            <li>Agrega a <strong style={{ color: T.ink }}>@EvolucionaTurnosBot</strong> al grupo de Telegram de tu equipo.</li>
+            <li>Envía cualquier mensaje en ese grupo (ej. "hola").</li>
+            <li>Vuelve aquí y dale clic a "Buscar grupo".</li>
+          </ol>
+          {detectadoSinConfirmar && (
+            <div className="flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg text-[12.5px]" style={{ background: T.accentSoft, color: T.accentInk }}>
+              <span>Detectamos el grupo "{estado.telegram_grupo_nombre}" — ¿es este?</span>
+              <button onClick={confirmar} disabled={confirmando} className="ev-btn px-3 py-1.5 text-[12px] text-white shrink-0 disabled:opacity-40" style={{ background: T.primary }}>
+                {confirmando ? "Confirmando…" : "Confirmar vínculo"}
+              </button>
+            </div>
+          )}
+          <button onClick={cargarEstado} className="ev-btn px-3.5 py-2 text-[12.5px] self-start" style={{ border: `1px solid ${T.border}` }}>
+            <Sparkles size={13} /> Buscar grupo
+          </button>
+        </div>
+      )}
+      {error && <p className="text-[11.5px] mt-2" style={{ color: T.danger }}>{error}</p>}
     </div>
   );
 }
