@@ -33,6 +33,9 @@ import {
   Search,
   FileText,
   Bot,
+  HeartPulse,
+  ClipboardList,
+  Users2,
 } from "lucide-react";
 import {
   BarChart,
@@ -299,12 +302,12 @@ const APP_BASE_CSS = `
 `;
 
 const ACTIVITY_TYPES = {
-  terapeutico: { label: "Grupo Terapéutico", color: "#2E8B74" },
-  turno_dia: { label: "Turno Día", color: "#4C8FC9" },
-  turno_noche: { label: "Turno Noche", color: "#8577C9" },
-  administrativo: { label: "Administrativo", color: "#DDA23E" },
-  capacitacion: { label: "Capacitación", color: "#D9704F" },
-  reunion: { label: "Reunión", color: "#6B7280" },
+  terapeutico: { label: "Grupo Terapéutico", color: "#0EA5E9", icon: HeartPulse },
+  turno_dia: { label: "Turno Día", color: "#2563EB", icon: Sun },
+  turno_noche: { label: "Turno Noche", color: "#7C3AED", icon: Moon },
+  administrativo: { label: "Administrativo", color: "#D97706", icon: ClipboardList },
+  capacitacion: { label: "Capacitación", color: "#EA580C", icon: GraduationCap },
+  reunion: { label: "Reunión", color: "#64748B", icon: Users2 },
 };
 
 /* ============================== SUPABASE ============================== */
@@ -3094,18 +3097,21 @@ function Legend({ types }) {
   const entries = types ? types.map((k) => [k, ACTIVITY_TYPES[k]]) : Object.entries(ACTIVITY_TYPES);
   return (
     <div className="hidden xl:flex items-center gap-3 flex-wrap">
-      {entries.map(([k, v]) => (
-        <span key={k} className="flex items-center gap-1.5 text-[12.5px]" style={{ color: T.muted }}>
-          <span className="w-2 h-2 rounded-full" style={{ background: v.color }} /> {v.label}
-        </span>
-      ))}
+      {entries.map(([k, v]) => {
+        const Icon = v.icon;
+        return (
+          <span key={k} className="flex items-center gap-1.5 text-[12.5px]" style={{ color: T.muted }}>
+            <Icon size={13} style={{ color: v.color }} /> {v.label}
+          </span>
+        );
+      })}
     </div>
   );
 }
 
 const HOUR_START = 6;
 const HOUR_END = 24;
-const ROW_H = 52;
+const ROW_H = 72;
 
 // Cuando dos o más actividades coinciden en el mismo horario (ej. dos grupos
 // distintos a las 8am), esta función les asigna columnas para mostrarse una
@@ -3164,7 +3170,7 @@ function WeekView({ ctx, types }) {
       </div>
 
       <div className="overflow-x-auto ev-scroll">
-        <div className="grid" style={{ gridTemplateColumns: "56px repeat(7, minmax(140px, 1fr))", minWidth: 900 }}>
+        <div className="grid" style={{ gridTemplateColumns: "56px repeat(7, minmax(190px, 1fr))", minWidth: 1400 }}>
           <div />
           {weekDays.map((d, i) => (
             <div key={i} className="px-2 py-2 text-center border-l" style={{ borderColor: T.border, background: toISO(d) === todayISO ? T.primarySoft : "transparent" }}>
@@ -3202,21 +3208,26 @@ function WeekView({ ctx, types }) {
                   const top = (Math.max(e.start, HOUR_START) - HOUR_START) * ROW_H;
                   const bottom = (Math.min(e.end, HOUR_END) - HOUR_START) * ROW_H;
                   const color = ACTIVITY_TYPES[e.type].color;
+                  const Icon = ACTIVITY_TYPES[e.type].icon;
                   const anchoPct = 100 / e.totalCols;
+                  const alto = Math.max(bottom - top, 40);
                   return (
                     <div
                       key={e.id}
                       onClick={(ev) => { ev.stopPropagation(); setDetail(e); }}
-                      className="absolute rounded-md px-2 py-1 cursor-pointer overflow-hidden hover:shadow-md hover:z-10 transition-shadow"
+                      className="absolute rounded-md px-2 py-1.5 cursor-pointer overflow-hidden hover:shadow-md hover:z-10 transition-shadow"
                       style={{
-                        top, height: Math.max(bottom - top, 24),
+                        top, height: alto,
                         left: `calc(${e.col * anchoPct}% + 2px)`,
                         width: `calc(${anchoPct}% - 4px)`,
-                        background: `${color}1A`, borderLeft: `3px solid ${color}`,
+                        background: `${color}17`, borderLeft: `3px solid ${color}`,
                       }}
                     >
-                      <p className="text-[11.5px] font-semibold truncate" style={{ color: T.ink }}>{e.title}</p>
-                      <p className="text-[10px] truncate" style={{ color: T.muted }}>{personName(e.personalId)}</p>
+                      <p className="text-[12.5px] font-semibold leading-snug line-clamp-2 flex items-start gap-1" style={{ color: T.ink }}>
+                        <Icon size={12} className="shrink-0 mt-[2.5px]" style={{ color }} />
+                        <span>{e.title}</span>
+                      </p>
+                      {alto >= 46 && <p className="text-[11px] truncate mt-0.5" style={{ color: T.muted }}>{personName(e.personalId)}</p>}
                       {e.end > HOUR_END && <p className="text-[9.5px] font-medium" style={{ color }}>continúa mañana ↴</p>}
                     </div>
                   );
@@ -4148,13 +4159,14 @@ function Field({ label, children }) {
 function DetailDrawer({ ctx, event, onClose, onEdit, onDelete }) {
   const p = personById(event.personalId);
   const color = ACTIVITY_TYPES[event.type].color;
+  const TipoIcon = ACTIVITY_TYPES[event.type].icon;
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
       <div className="flex-1 bg-black/30" onClick={onClose} />
       <div className="w-full max-w-sm h-full p-5 overflow-y-auto ev-scroll" style={{ background: T.surface }}>
         <div className="flex items-center justify-between mb-5">
-          <span className="px-2.5 py-1 rounded-full text-[11.5px] font-semibold" style={{ background: `${color}1A`, color }}>
-            {ACTIVITY_TYPES[event.type].label}
+          <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11.5px] font-semibold" style={{ background: `${color}17`, color }}>
+            <TipoIcon size={13} /> {ACTIVITY_TYPES[event.type].label}
           </span>
           <button onClick={onClose}><X size={18} /></button>
         </div>
@@ -4456,10 +4468,11 @@ function BibliotecaIndividual({ ctx }) {
   }
 
   function tarjeta(b) {
+    const TipoIcon = ACTIVITY_TYPES[b.tipo].icon;
     return (
       <div key={b.id} className="ev-card p-4 flex flex-col gap-2">
-        <span className="self-start px-2 py-0.5 rounded-full text-[11px] font-semibold" style={{ background: `${ACTIVITY_TYPES[b.tipo].color}1A`, color: ACTIVITY_TYPES[b.tipo].color }}>
-          {ACTIVITY_TYPES[b.tipo].label}
+        <span className="self-start flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-semibold" style={{ background: `${ACTIVITY_TYPES[b.tipo].color}17`, color: ACTIVITY_TYPES[b.tipo].color }}>
+          <TipoIcon size={11} /> {ACTIVITY_TYPES[b.tipo].label}
         </span>
         <h4 className="font-semibold text-[14px]">{b.nombre}</h4>
         {b.metodologia && <p className="text-[12px] line-clamp-3" style={{ color: T.muted }}><strong>Metodología:</strong> {b.metodologia}</p>}
