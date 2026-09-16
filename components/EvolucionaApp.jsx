@@ -2489,9 +2489,11 @@ function generarPropuestaTurnos({ personal, eventosExistentes, reglas, festivos,
 
         let elegidos = [...fijos, ...candidatos.slice(0, Math.max(0, requerido - fijos.length))];
 
-        if (reglas.operadorRequiereAuxiliar && requerido >= 2) {
-          // Regla real: nunca dos operadores terapéuticos juntos en el mismo
-          // turno. Si hay un operador, necesita un auxiliar de compañía. Si no
+        if (reglas.operadorRequiereAuxiliar) {
+          // Regla real (aplica siempre, sin importar el mínimo de personal del
+          // turno): nunca dos operadores terapéuticos juntos, y un operador
+          // JAMÁS puede quedar solo sin un auxiliar de compañía — así el
+          // mínimo normal sea 1, en ese caso se suma un auxiliar de más. Si no
           // hay ningún operador disponible, dos (o más) auxiliares solos es
           // perfectamente válido — no se exige operador en cada turno.
           const operadoresEnTurno = elegidos.filter((p) => esOperador(p.cargo, reglas));
@@ -2518,22 +2520,10 @@ function generarPropuestaTurnos({ personal, eventosExistentes, reglas, festivos,
           if (hayOperadorAhora && !hayAuxiliarAhora) {
             const refuerzo = candidatos.find((p) => esAuxiliar(p.cargo, reglas) && !elegidos.includes(p));
             if (refuerzo) {
-              if (elegidos.length < requerido) {
-                // Hay cupo libre (aún no se llegó al mínimo): se suma sin pasarse.
-                elegidos = [...elegidos, refuerzo];
-              } else {
-                // Ya está completo: se reemplaza a quien no sea una asignación fija,
-                // para no terminar con más personas de las que en realidad hacen falta.
-                const noFijos = elegidos.filter((p) => !fijos.some((f) => f.id === p.id));
-                if (noFijos.length > 0) {
-                  const aQuitar = noFijos[noFijos.length - 1];
-                  elegidos = [...elegidos.filter((p) => p.id !== aQuitar.id), refuerzo];
-                } else {
-                  // Todos los asignados son fijos ("siempre"); se agrega igual,
-                  // aunque implique un cupo extra, para no dejar al operador solo.
-                  elegidos = [...elegidos, refuerzo];
-                }
-              }
+              // Siempre se SUMA el auxiliar (nunca se reemplaza al operador),
+              // aunque eso implique pasarse del mínimo normal del turno — un
+              // operador solo, sin compañía, no es una opción válida.
+              elegidos = [...elegidos, refuerzo];
             } else {
               faltantes.push({ date: dISO, type: tipo, faltan: 1, motivo: "sin auxiliar de compañía para el operador" });
             }
