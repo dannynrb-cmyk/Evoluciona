@@ -3942,9 +3942,64 @@ function Configuracion({ ctx }) {
       )}
 
       {isMaestro && <TelegramGrupoConfig />}
+      {isMaestro && <CronEjecucionesLog />}
 
       {festivoModal && <FestivoModal ctx={ctx} onClose={() => setFestivoModal(false)} />}
       {ctx.reglaPersonalModal && <ReglaPersonalModal ctx={ctx} onClose={() => ctx.setReglaPersonalModal(false)} />}
+    </div>
+  );
+}
+
+function CronEjecucionesLog() {
+  const [ejecuciones, setEjecuciones] = useState(null);
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState(null);
+
+  async function cargar() {
+    setCargando(true);
+    setError(null);
+    try {
+      const filas = await sb("cron_ejecuciones?select=*&order=ejecutado_en.desc&limit=10");
+      setEjecuciones(filas);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setCargando(false);
+    }
+  }
+  React.useEffect(() => { cargar(); }, []);
+
+  return (
+    <div className="ev-card p-5">
+      <div className="flex items-center justify-between mb-1">
+        <h3 className="ev-display font-semibold text-[15px]">Últimas ejecuciones del recordatorio de turno</h3>
+        <button onClick={cargar} className="ev-btn px-3 py-1.5 text-[12px]" style={{ border: `1px solid ${T.border}` }}>Actualizar</button>
+      </div>
+      <p className="text-[12px] mb-4" style={{ color: T.muted }}>
+        Se guarda un registro cada vez que corre (automático a las 8:00am, o si lo visitas manualmente) — así puedes confirmar que la tarea diaria de verdad se está ejecutando sola.
+      </p>
+      {cargando && <p className="text-[12.5px]" style={{ color: T.muted }}>Cargando…</p>}
+      {error && <p className="text-[12px]" style={{ color: T.danger }}>{error}</p>}
+      {ejecuciones && ejecuciones.length === 0 && (
+        <p className="text-[12.5px]" style={{ color: T.muted }}>Todavía no hay ninguna ejecución registrada.</p>
+      )}
+      {ejecuciones && ejecuciones.length > 0 && (
+        <div className="flex flex-col gap-2">
+          {ejecuciones.map((e) => {
+            const r = e.resultado || {};
+            const ok = r.ok !== false;
+            return (
+              <div key={e.id} className="flex items-center justify-between px-3 py-2 rounded-lg text-[12.5px]" style={{ background: ok ? T.primarySoft : T.dangerSoft, color: ok ? T.primaryDark : T.danger }}>
+                <span>
+                  {new Date(e.ejecutado_en).toLocaleString("es-CO", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                  {" · "}
+                  {r.error ? r.error : r.mensaje ? r.mensaje : `Enviados: ${r.enviados ?? 0} · Sin vincular: ${r.sinVincular ?? 0} · Personas con turno: ${r.personasConTurno ?? 0}`}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

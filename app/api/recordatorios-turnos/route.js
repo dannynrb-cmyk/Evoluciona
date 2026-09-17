@@ -1,6 +1,9 @@
 // Vercel la llama automáticamente una vez al día (ver vercel.json). Revisa
 // los turnos de "mañana" en TODOS los servicios, y le escribe por Telegram
-// a cada persona que ya vinculó su cuenta.
+// a cada persona que ya vinculó su cuenta. Cada ejecución (automática o
+// manual) queda registrada en "cron_ejecuciones", para poder confirmar
+// cuándo corrió sin depender de los logs de Vercel (que en el plan
+// gratuito solo se guardan 1 hora).
 
 export const maxDuration = 30;
 
@@ -31,6 +34,17 @@ async function enviarMensaje(token, chatId, texto) {
   return res.ok;
 }
 
+async function registrarEjecucion(serviceKey, resultado) {
+  if (!serviceKey) return;
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/cron_ejecuciones`, {
+      method: "POST",
+      headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+      body: JSON.stringify({ ruta: "/api/recordatorios-turnos", resultado }),
+    });
+  } catch (_) { /* si falla el registro, no afecta el resultado del recordatorio en sí */ }
+}
+
 export async function GET(request) {
   // Si Vercel manda su propio secreto de cron, lo verificamos (evita que
   // cualquiera con la URL dispare recordatorios a destiempo).
@@ -45,7 +59,9 @@ export async function GET(request) {
   const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
   const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!TELEGRAM_TOKEN || !SERVICE_KEY) {
-    return Response.json({ ok: false, error: "Faltan llaves en el servidor (TELEGRAM_BOT_TOKEN / SUPABASE_SERVICE_ROLE_KEY)." }, { status: 500 });
+    const resultado = { ok: false, error: "Faltan llaves en el servidor (TELEGRAM_BOT_TOKEN / SUPABASE_SERVICE_ROLE_KEY)." };
+    await registrarEjecucion(SERVICE_KEY, resultado);
+    return Response.json(resultado, { status: 500 });
   }
 
   try {
@@ -58,7 +74,9 @@ export async function GET(request) {
     );
     const turnos = turnosRes.ok ? await turnosRes.json() : [];
     if (turnos.length === 0) {
-      return Response.json({ ok: true, fecha, enviados: 0, mensaje: "No hay turnos asignados para mañana." });
+      const resultado = { ok: true, fecha, enviados: 0, mensaje: "No hay turnos asignados para mañana." };
+      await registrarEjecucion(SERVICE_KEY, resultado);
+      return Response.json(resultado);
     }
 
     const idsPersonal = [...new Set(turnos.map((t) => t.personal_id))];
@@ -88,9 +106,13 @@ export async function GET(request) {
       if (ok) enviados++;
     }
 
-    return Response.json({ ok: true, fecha, personasConTurno: idsPersonal.length, enviados, sinVincular });
+    const resultado = { ok: true, fecha, personasConTurno: idsPersonal.length, enviados, sinVincular };
+    await registrarEjecucion(SERVICE_KEY, resultado);
+    return Response.json(resultado);
   } catch (err) {
     console.error("Recordatorios de turno: error ->", err);
-    return Response.json({ ok: false, error: err.message }, { status: 500 });
+    const resultado = { ok: false, error: err.message };
+    await registrarEjecucion(SERVICE_KEY, resultado);
+    return Response.json(resultado, { status: 500 });
   }
 }
