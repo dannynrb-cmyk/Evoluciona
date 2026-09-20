@@ -995,6 +995,7 @@ export default function EvolucionaApp() {
   const [theme, setTheme] = useTheme();
   const [session, setSession] = useState(null); // { email, rol }
   const [recuperandoSesion, setRecuperandoSesion] = useState(true);
+  const [mostrarLanding, setMostrarLanding] = useState(true);
 
   // Al abrir la app (o volver a ella tras haber estado en segundo plano en
   // el celular, donde el sistema operativo suele "matar" la pestaña de la
@@ -1241,7 +1242,10 @@ export default function EvolucionaApp() {
   }
 
   if (!session) {
-    return <LoginScreen onLogin={(s) => setSession(s)} theme={theme} setTheme={setTheme} />;
+    if (mostrarLanding) {
+      return <LandingPage onComenzar={() => setMostrarLanding(false)} theme={theme} setTheme={setTheme} />;
+    }
+    return <LoginScreen onLogin={(s) => setSession(s)} onVolver={() => setMostrarLanding(true)} theme={theme} setTheme={setTheme} />;
   }
 
   const weekStart = addDays(monday, weekOffset * 7);
@@ -1905,7 +1909,86 @@ export default function EvolucionaApp() {
 }
 
 /* ============================== LOGIN ============================== */
-function LoginScreen({ onLogin, theme, setTheme }) {
+const CARACTERISTICAS_LANDING = [
+  { icon: CalendarDays, titulo: "Programador de actividades", texto: "Calendario semanal y mensual para organizar la jornada terapéutica día a día, con actividades simultáneas lado a lado y horarios en fracciones de hora." },
+  { icon: Clock, titulo: "Turnos y generación automática", texto: "Arma el mes de turnos con un clic, respetando horas contratadas, descansos obligatorios, mínimos de personal y acompañamiento operador-auxiliar." },
+  { icon: BookOpen, titulo: "Biblioteca de actividades", texto: "Plantillas reutilizables organizadas por tema, con buscador, para no reinventar la metodología de cada actividad cada semana." },
+  { icon: GraduationCap, titulo: "Formación continua", texto: "Infografías, videos y PDFs para el equipo, con seguimiento de quién los vio y tests cortos de comprensión." },
+  { icon: Bot, titulo: "Evo, tu asistente de IA", texto: "Responde preguntas usando solo el contenido real de tu plataforma — nunca inventa — y ayuda a redactar notas de actividad." },
+  { icon: Megaphone, titulo: "Avisos y recordatorios por Telegram", texto: "Cada persona recibe un recordatorio de su turno del día siguiente, y el equipo completo puede recibir los avisos del tablero en su propio grupo." },
+  { icon: Building2, titulo: "Multi-servicio", texto: "Administra varias sedes o unidades desde una sola cuenta, cada una con su propio personal y sus propias reglas de turno." },
+  { icon: FileBarChart, titulo: "Reportes listos para presentar", texto: "Exporta a Excel o PDF el resumen de turnos y de personal, con el calendario incluido." },
+];
+
+function LandingPage({ onComenzar, theme, setTheme }) {
+  return (
+    <div data-theme={theme} style={{ background: T.base, color: T.ink, fontFamily: "'Inter', sans-serif" }} className="ev-root relative w-full min-h-[720px] transition-colors duration-200">
+      <style>{THEME_CSS}</style>
+      <style>{APP_BASE_CSS}</style>
+
+      <header className="flex items-center justify-between px-6 lg:px-12 py-5">
+        <div className="flex items-center gap-2">
+          <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: T.primarySoft }}>
+            <LogoMark size={20} />
+          </div>
+          <span className="ev-display text-[18px] font-bold">EVOLUCIONA</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <ThemeToggle theme={theme} setTheme={setTheme} />
+          <button onClick={onComenzar} className="ev-btn px-4 py-2 text-[13px] text-white" style={{ background: T.primary }}>
+            Iniciar sesión
+          </button>
+        </div>
+      </header>
+
+      <main className="px-6 lg:px-12 pb-16">
+        <section className="max-w-2xl mx-auto text-center pt-10 pb-14">
+          <span className="inline-block px-3 py-1 rounded-full text-[11.5px] font-semibold mb-4" style={{ background: T.primarySoft, color: T.primaryDark }}>
+            Sistema inteligente de planificación
+          </span>
+          <h1 className="ev-display text-[32px] sm:text-[38px] font-bold leading-tight mb-3">
+            La operación diaria de tu equipo terapéutico, en un solo lugar
+          </h1>
+          <p className="text-[15px] leading-relaxed mb-7" style={{ color: T.muted }}>
+            Evoluciona organiza actividades, turnos, formación continua y comunicación con tu equipo —
+            con generación automática de turnos e IA integrada, pensado para instituciones de salud y bienestar.
+          </p>
+          <button onClick={onComenzar} className="ev-btn px-6 py-3 text-[14px] text-white" style={{ background: T.primary }}>
+            Iniciar sesión <ArrowRight size={16} />
+          </button>
+        </section>
+
+        <section className="max-w-5xl mx-auto grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {CARACTERISTICAS_LANDING.map((c) => {
+            const Icon = c.icon;
+            return (
+              <div key={c.titulo} className="ev-card ev-card-hover p-5 flex flex-col gap-2.5">
+                <div className="w-9 h-9 rounded-lg flex items-center justify-center" style={{ background: T.primarySoft }}>
+                  <Icon size={18} style={{ color: T.primary }} />
+                </div>
+                <h3 className="font-semibold text-[13.5px]">{c.titulo}</h3>
+                <p className="text-[12px] leading-relaxed" style={{ color: T.muted }}>{c.texto}</p>
+              </div>
+            );
+          })}
+        </section>
+
+        <section className="max-w-2xl mx-auto text-center pt-16">
+          <p className="text-[13px] mb-4" style={{ color: T.muted }}>¿Ya tienes cuenta en tu institución?</p>
+          <button onClick={onComenzar} className="ev-btn px-5 py-2.5 text-[13px]" style={{ border: `1px solid ${T.border}` }}>
+            Iniciar sesión o crear cuenta
+          </button>
+        </section>
+      </main>
+
+      <footer className="text-center py-6 text-[11.5px]" style={{ color: T.muted }}>
+        EVOLUCIONA — Tecnología que acompaña el progreso
+      </footer>
+    </div>
+  );
+}
+
+function LoginScreen({ onLogin, onVolver, theme, setTheme }) {
   const [mode, setMode] = useState("signin"); // 'signin' | 'signup'
   const [form, setForm] = useState({ nombre: "", correo: "", password: "" });
   const [loading, setLoading] = useState(false);
@@ -1979,6 +2062,13 @@ function LoginScreen({ onLogin, theme, setTheme }) {
     <div data-theme={theme} style={{ background: T.base, color: T.ink, fontFamily: "'Inter', sans-serif" }} className="ev-root relative w-full min-h-[720px] flex items-center justify-center p-6 transition-colors duration-200">
       <style>{THEME_CSS}</style>
       <style>{APP_BASE_CSS}</style>
+      <div className="absolute top-5 left-5">
+        {onVolver && (
+          <button onClick={onVolver} className="ev-btn px-3 py-1.5 text-[12.5px]" style={{ border: `1px solid ${T.border}`, color: T.muted }}>
+            <ChevronLeft size={14} /> Volver
+          </button>
+        )}
+      </div>
       <div className="absolute top-5 right-5">
         <ThemeToggle theme={theme} setTheme={setTheme} />
       </div>
