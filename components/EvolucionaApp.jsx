@@ -2730,7 +2730,7 @@ function TurnosMesGrid({ ctx, filtroPersonalId }) {
 
 /* ============================== TURNOS (calendario) ============================== */
 function TurnosCalendario({ ctx }) {
-  const { isMaestro, events, personal, monthOffset, setMonthOffset, setDetail, reglas, festivos } = ctx;
+  const { isMaestro, events, personal, monthOffset, setMonthOffset, setDetail, reglas, festivos, novedades } = ctx;
   const turnos = events.filter((e) => TURNO_TYPES.includes(e.type));
   const festivoSet = new Set((festivos || []).map((f) => f.fecha));
   const elegibles = personal.filter((p) => esCargoDeTurno(p.cargo, reglas?.cargosTurno));
@@ -2790,6 +2790,53 @@ function TurnosCalendario({ ctx }) {
       festivoNoche: suyos.filter((t) => t.type === "turno_noche" && festivoSet.has(t.date)).length,
     };
   });
+
+  // Novedades (incapacidad/permiso/vacaciones) que se cruzan con el periodo del resumen.
+  const NOMBRES_NOVEDAD_RESUMEN = { incapacidad: "Incapacidad", permiso: "Permiso", vacaciones: "Vacaciones", otro: "Novedad" };
+  const novedadesDelRango = (novedades || [])
+    .filter((n) => n.fechaInicio <= ultimoDiaResumen && n.fechaFin >= primerDiaResumen)
+    .filter((n) => !filtroPersonal || n.personalId === filtroPersonal)
+    .sort((a, b) => a.fechaInicio.localeCompare(b.fechaInicio));
+
+  // Turnos extra dentro del periodo: días con alguna novedad activa donde se
+  // asignó más personal del mínimo, para cubrir esa ausencia.
+  const turnosExtraDelRango = [];
+  {
+    let cursor = new Date(`${primerDiaResumen}T00:00:00`);
+    const finCursor = new Date(`${ultimoDiaResumen}T00:00:00`);
+    while (cursor <= finCursor) {
+      const dISO = toISO(cursor);
+      const ausenciasDia = (novedades || []).filter((n) => n.fechaInicio <= dISO && n.fechaFin >= dISO);
+      if (ausenciasDia.length > 0) {
+        ["turno_dia", "turno_noche"].forEach((tipo) => {
+          const chips = turnos.filter((t) => t.date === dISO && t.type === tipo);
+          const min = minRequeridoTurno(dISO, tipo, reglas, festivoSet);
+          chips.forEach((c, idx) => {
+            if (idx >= min && (!filtroPersonal || c.personalId === filtroPersonal)) {
+              turnosExtraDelRango.push({
+                id: c.id, date: dISO, tipo, personalId: c.personalId,
+                horas: horasEfectivas(c),
+                cubriendo: ausenciasDia.map((a) => personName(a.personalId)).join(", "),
+              });
+            }
+          });
+        });
+      }
+      cursor = addDays(cursor, 1);
+    }
+  }
+  const eventosNovedadesYExtras = [
+    ...novedadesDelRango.map((n) => ({
+      key: `n-${n.id}`, orden: n.fechaInicio,
+      texto: `${NOMBRES_NOVEDAD_RESUMEN[n.tipo] || "Novedad"}: ${personName(n.personalId)} — del ${new Date(`${n.fechaInicio}T00:00:00`).toLocaleDateString("es-CO", { day: "numeric", month: "short" })} al ${new Date(`${n.fechaFin}T00:00:00`).toLocaleDateString("es-CO", { day: "numeric", month: "short" })}${n.motivo ? ` (${n.motivo})` : ""}`,
+      tipo: "novedad",
+    })),
+    ...turnosExtraDelRango.map((e) => ({
+      key: `e-${e.id}`, orden: e.date,
+      texto: `Turno extra: ${personName(e.personalId)} — ${new Date(`${e.date}T00:00:00`).toLocaleDateString("es-CO", { day: "numeric", month: "short" })}, ${e.tipo === "turno_noche" ? "noche" : "día"}, ${e.horas}h (cubriendo a ${e.cubriendo})`,
+      tipo: "extra",
+    })),
+  ].sort((a, b) => a.orden.localeCompare(b.orden));
 
   function chipsFor(dISO, tipo) {
     return turnos.filter((t) => t.date === dISO && t.type === tipo);
@@ -2946,6 +2993,30 @@ function TurnosCalendario({ ctx }) {
               )}
             </tbody>
           </table>
+        </div>
+      </div>
+
+      <div className="ev-card overflow-hidden max-w-3xl">
+        <div className="px-4 py-3 border-b" style={{ borderColor: T.border }}>
+          <h3 className="ev-display font-semibold text-[13.5px]">Novedades y turnos extra del periodo</h3>
+          <p className="text-[11.5px]" style={{ color: T.muted }}>
+            Incapacidades, permisos y vacaciones registradas en Novedades, junto con los turnos adicionales que se asignaron para cubrirlas — se actualiza solo con lo que registres en Novedades.
+          </p>
+        </div>
+        <div className="flex flex-col divide-y" style={{ borderColor: T.border }}>
+          {eventosNovedadesYExtras.map((e) => (
+            <div key={e.key} className="flex items-center gap-2.5 px-4 py-2.5 text-[13px]">
+              {e.tipo === "novedad" ? (
+                <UserX size={14} className="shrink-0" style={{ color: T.danger }} />
+              ) : (
+                <Plus size={14} className="shrink-0" style={{ color: T.accentInk }} />
+              )}
+              <span>{e.texto}</span>
+            </div>
+          ))}
+          {eventosNovedadesYExtras.length === 0 && (
+            <p className="px-4 py-5 text-center text-[12.5px]" style={{ color: T.muted }}>Sin novedades ni turnos extra en este periodo.</p>
+          )}
         </div>
       </div>
     </div>
