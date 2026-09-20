@@ -571,7 +571,7 @@ async function renombrarServicioRemote(id, nombre) {
 
 async function fetchAllRemote(servicioId) {
   const s = `servicio_id=eq.${servicioId}`;
-  const [personalRows, actRows, turnRows, bibRows, reglasRow, festivoRows, novedadRows, reglaPersonalRows, plantillaRows, plantillaItemRows, avisoRows, temaRows, formacionRows, vistoRows, preguntaRows, resultadoRows] = await Promise.all([
+  const [personalRows, actRows, turnRows, bibRows, reglasRow, festivoRows, novedadRows, reglaPersonalRows, plantillaRows, plantillaItemRows, avisoRows, temaRows, formacionRows, vistoRows, preguntaRows, resultadoRows, turnoExtraRows] = await Promise.all([
     sb(`personal?${s}&select=*&order=nombre`),
     sb(`actividades?${s}&select=*`),
     sb(`turnos?${s}&select=*`),
@@ -588,6 +588,7 @@ async function fetchAllRemote(servicioId) {
     sb("formacion_vistos?select=*"),
     sb("formacion_preguntas?select=*&order=orden"),
     sb("formacion_resultados?select=*"),
+    sb(`turnos_extra?${s}&select=*&order=fecha.desc`),
   ]);
   return {
     personal: personalRows.map(mapPersonal),
@@ -605,6 +606,7 @@ async function fetchAllRemote(servicioId) {
     vistos: vistoRows.map(mapVisto),
     preguntas: preguntaRows.map(mapPregunta),
     resultados: resultadoRows.map(mapResultado),
+    turnosExtra: turnoExtraRows.map(mapTurnoExtra),
   };
 }
 async function fetchEventsRemote(servicioId) {
@@ -784,6 +786,32 @@ async function insertNovedadRemote(form) {
 }
 async function deleteNovedadRemote(id) {
   await sb(`novedades?id=eq.${id}`, { method: "DELETE", prefer: "return=minimal" });
+}
+
+function mapTurnoExtra(row) {
+  return {
+    id: row.id, turnoId: row.turno_id, personalId: row.personal_id, fecha: row.fecha,
+    tipoTurno: row.tipo_turno === "dia" ? "turno_dia" : "turno_noche", horas: Number(row.horas),
+    cubrePersonalId: row.cubre_personal_id || null, motivo: row.motivo || "",
+  };
+}
+async function fetchTurnosExtra() {
+  const rows = await sb("turnos_extra?select=*&order=fecha.desc");
+  return rows.map(mapTurnoExtra);
+}
+async function insertTurnoExtraRemote(form) {
+  const [row] = await sb("turnos_extra", {
+    method: "POST",
+    body: JSON.stringify({
+      turno_id: form.turnoId, personal_id: form.personalId, fecha: form.fecha,
+      tipo_turno: form.tipoTurno === "turno_noche" ? "noche" : "dia", horas: form.horas,
+      cubre_personal_id: form.cubrePersonalId || null, motivo: form.motivo || null, servicio_id: SERVICIO_ACTUAL,
+    }),
+  });
+  return mapTurnoExtra(row);
+}
+async function deleteTurnoExtraRemote(id) {
+  await sb(`turnos_extra?id=eq.${id}`, { method: "DELETE", prefer: "return=minimal" });
 }
 
 function mapReglaPersonal(row) {
@@ -1028,6 +1056,7 @@ export default function EvolucionaApp() {
   const [reglas, setReglas] = useState(null);
   const [festivos, setFestivos] = useState([]);
   const [novedades, setNovedades] = useState([]);
+  const [turnosExtra, setTurnosExtra] = useState([]);
   const [reglasPersonal, setReglasPersonal] = useState([]);
   const [plantillas, setPlantillas] = useState([]);
   const [plantillaItems, setPlantillaItems] = useState([]);
@@ -1088,7 +1117,7 @@ export default function EvolucionaApp() {
         // pero por si acaso no dejamos la app en blanco sin explicación).
         setPersonal([]); setEvents([]); setBiblioteca([]); setReglas(null); setFestivos([]);
         setNovedades([]); setReglasPersonal([]); setPlantillas([]); setPlantillaItems([]);
-        setAvisos([]); setTemas([]); setFormacion([]); setVistos([]); setPreguntas([]); setResultados([]);
+        setAvisos([]); setTemas([]); setFormacion([]); setVistos([]); setPreguntas([]); setResultados([]); setTurnosExtra([]);
         setLoading(false);
         return;
       }
@@ -1100,6 +1129,7 @@ export default function EvolucionaApp() {
       setReglas(data.reglas);
       setFestivos(data.festivos);
       setNovedades(data.novedades);
+      setTurnosExtra(data.turnosExtra);
       setReglasPersonal(data.reglasPersonal);
       setPlantillas(data.plantillas);
       setPlantillaItems(data.plantillaItems);
@@ -1415,6 +1445,35 @@ export default function EvolucionaApp() {
       showToast(`No se pudo eliminar: ${err.message}`, "warn");
     }
   }
+  async function agregarTurnoExtra(form) {
+    setSaving(true);
+    try {
+      const turno = events.find((e) => e.id === form.turnoId);
+      if (!turno) throw new Error("No se encontró ese turno.");
+      const saved = await insertTurnoExtraRemote({
+        turnoId: turno.id, personalId: turno.personalId, fecha: turno.date,
+        tipoTurno: turno.type, horas: horasEfectivas(turno),
+        cubrePersonalId: form.cubrePersonalId || null, motivo: form.motivo || "",
+      });
+      setTurnosExtra((prev) => [saved, ...prev]);
+      showToast("Turno extra registrado");
+      return true;
+    } catch (err) {
+      showToast(`No se pudo registrar: ${err.message}`, "warn");
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  }
+  async function eliminarTurnoExtra(id) {
+    try {
+      await deleteTurnoExtraRemote(id);
+      setTurnosExtra((prev) => prev.filter((t) => t.id !== id));
+      showToast("Turno extra eliminado", "warn");
+    } catch (err) {
+      showToast(`No se pudo eliminar: ${err.message}`, "warn");
+    }
+  }
   async function saveReglaPersonal(form) {
     setSaving(true);
     try {
@@ -1671,6 +1730,7 @@ export default function EvolucionaApp() {
     reglas, saveReglas, festivos, addFestivo, deleteFestivo, festivoModal, setFestivoModal,
     confirmarPropuestaTurnos,
     novedades, saveNovedad, deleteNovedad,
+    turnosExtra, agregarTurnoExtra, eliminarTurnoExtra,
     reglasPersonal, saveReglaPersonal, deleteReglaPersonal,
     plantillas, plantillaItems, plantillaModal, setPlantillaModal, plantillaEditorId, setPlantillaEditorId,
     crearPlantilla, eliminarPlantilla, agregarPlantillaItem, eliminarPlantillaItem,
@@ -2730,7 +2790,7 @@ function TurnosMesGrid({ ctx, filtroPersonalId }) {
 
 /* ============================== TURNOS (calendario) ============================== */
 function TurnosCalendario({ ctx }) {
-  const { isMaestro, events, personal, monthOffset, setMonthOffset, setDetail, reglas, festivos, novedades } = ctx;
+  const { isMaestro, events, personal, monthOffset, setMonthOffset, setDetail, reglas, festivos, novedades, turnosExtra } = ctx;
   const turnos = events.filter((e) => TURNO_TYPES.includes(e.type));
   const festivoSet = new Set((festivos || []).map((f) => f.fecha));
   const elegibles = personal.filter((p) => esCargoDeTurno(p.cargo, reglas?.cargosTurno));
@@ -2798,42 +2858,21 @@ function TurnosCalendario({ ctx }) {
     .filter((n) => !filtroPersonal || n.personalId === filtroPersonal)
     .sort((a, b) => a.fechaInicio.localeCompare(b.fechaInicio));
 
-  // Turnos extra dentro del periodo: días con alguna novedad activa donde se
-  // asignó más personal del mínimo, para cubrir esa ausencia.
-  const turnosExtraDelRango = [];
-  {
-    let cursor = new Date(`${primerDiaResumen}T00:00:00`);
-    const finCursor = new Date(`${ultimoDiaResumen}T00:00:00`);
-    while (cursor <= finCursor) {
-      const dISO = toISO(cursor);
-      const ausenciasDia = (novedades || []).filter((n) => n.fechaInicio <= dISO && n.fechaFin >= dISO);
-      if (ausenciasDia.length > 0) {
-        ["turno_dia", "turno_noche"].forEach((tipo) => {
-          const chips = turnos.filter((t) => t.date === dISO && t.type === tipo);
-          const min = minRequeridoTurno(dISO, tipo, reglas, festivoSet);
-          chips.forEach((c, idx) => {
-            if (idx >= min && (!filtroPersonal || c.personalId === filtroPersonal)) {
-              turnosExtraDelRango.push({
-                id: c.id, date: dISO, tipo, personalId: c.personalId,
-                horas: horasEfectivas(c),
-                cubriendo: ausenciasDia.map((a) => personName(a.personalId)).join(", "),
-              });
-            }
-          });
-        });
-      }
-      cursor = addDays(cursor, 1);
-    }
-  }
+  // Turnos extra dentro del periodo: los que el Maestro registró manualmente
+  // en Novedades (ya no se intenta adivinar comparando contra el mínimo).
+  const turnosExtraDelRango = (turnosExtra || [])
+    .filter((t) => t.fecha >= primerDiaResumen && t.fecha <= ultimoDiaResumen)
+    .filter((t) => !filtroPersonal || t.personalId === filtroPersonal);
+
   const eventosNovedadesYExtras = [
     ...novedadesDelRango.map((n) => ({
       key: `n-${n.id}`, orden: n.fechaInicio,
       texto: `${NOMBRES_NOVEDAD_RESUMEN[n.tipo] || "Novedad"}: ${personName(n.personalId)} — del ${new Date(`${n.fechaInicio}T00:00:00`).toLocaleDateString("es-CO", { day: "numeric", month: "short" })} al ${new Date(`${n.fechaFin}T00:00:00`).toLocaleDateString("es-CO", { day: "numeric", month: "short" })}${n.motivo ? ` (${n.motivo})` : ""}`,
       tipo: "novedad",
     })),
-    ...turnosExtraDelRango.map((e) => ({
-      key: `e-${e.id}`, orden: e.date,
-      texto: `Turno extra: ${personName(e.personalId)} — ${new Date(`${e.date}T00:00:00`).toLocaleDateString("es-CO", { day: "numeric", month: "short" })}, ${e.tipo === "turno_noche" ? "noche" : "día"}, ${e.horas}h (cubriendo a ${e.cubriendo})`,
+    ...turnosExtraDelRango.map((t) => ({
+      key: `e-${t.id}`, orden: t.fecha,
+      texto: `Turno extra: ${personName(t.personalId)} — ${new Date(`${t.fecha}T00:00:00`).toLocaleDateString("es-CO", { day: "numeric", month: "short" })}, ${ACTIVITY_TYPES[t.tipoTurno].label.toLowerCase()}, ${t.horas}h${t.cubrePersonalId ? ` (cubriendo a ${personName(t.cubrePersonalId)})` : ""}${t.motivo ? ` · ${t.motivo}` : ""}`,
       tipo: "extra",
     })),
   ].sort((a, b) => a.orden.localeCompare(b.orden));
@@ -3000,7 +3039,7 @@ function TurnosCalendario({ ctx }) {
         <div className="px-4 py-3 border-b" style={{ borderColor: T.border }}>
           <h3 className="ev-display font-semibold text-[13.5px]">Novedades y turnos extra del periodo</h3>
           <p className="text-[11.5px]" style={{ color: T.muted }}>
-            Incapacidades, permisos y vacaciones registradas en Novedades, junto con los turnos adicionales que se asignaron para cubrirlas — se actualiza solo con lo que registres en Novedades.
+            Incapacidades, permisos y vacaciones, junto con los turnos extra que hayas registrado manualmente — todo se toma directo de lo que registres en Novedades.
           </p>
         </div>
         <div className="flex flex-col divide-y" style={{ borderColor: T.border }}>
@@ -4592,8 +4631,9 @@ function PersonalModal({ ctx, onClose, initial }) {
 /* ============================== BIBLIOTECA DE ACTIVIDADES ============================== */
 /* ============================== NOVEDADES ============================== */
 function Novedades({ ctx }) {
-  const { novedades, personal, events, reglas, isMaestro, deleteNovedad, reemplazarTurno, showToast } = ctx;
+  const { novedades, personal, events, reglas, isMaestro, deleteNovedad, reemplazarTurno, showToast, turnosExtra, eliminarTurnoExtra } = ctx;
   const [modalOpen, setModalOpen] = useState(false);
+  const [turnoExtraModalOpen, setTurnoExtraModalOpen] = useState(false);
   const todayISO = toISO(TODAY);
 
   function afectadosDe(n) {
@@ -4609,11 +4649,36 @@ function Novedades({ ctx }) {
           <p className="text-[12.5px]" style={{ color: T.muted }}>Incapacidades, permisos u otras ausencias, con sugerencia de reemplazo para los turnos afectados.</p>
         </div>
         {isMaestro && (
-          <button onClick={() => setModalOpen(true)} className="ev-btn px-3.5 py-2 text-[12.5px] text-white" style={{ background: T.primary }}>
-            <Plus size={14} /> Reportar novedad
-          </button>
+          <div className="flex gap-2 shrink-0">
+            <button onClick={() => setTurnoExtraModalOpen(true)} className="ev-btn px-3.5 py-2 text-[12.5px]" style={{ border: `1px solid ${T.border}` }}>
+              <Plus size={14} /> Registrar turno extra
+            </button>
+            <button onClick={() => setModalOpen(true)} className="ev-btn px-3.5 py-2 text-[12.5px] text-white" style={{ background: T.primary }}>
+              <Plus size={14} /> Reportar novedad
+            </button>
+          </div>
         )}
       </div>
+
+      {turnosExtra.length > 0 && (
+        <div className="ev-card p-4">
+          <h4 className="ev-display font-semibold text-[13.5px] mb-2.5">Turnos extra registrados</h4>
+          <div className="flex flex-col divide-y" style={{ borderColor: T.border }}>
+            {turnosExtra.map((t) => (
+              <div key={t.id} className="flex items-center justify-between gap-3 py-2 text-[12.5px]">
+                <span>
+                  <strong>{personName(t.personalId)}</strong> — {new Date(`${t.fecha}T00:00:00`).toLocaleDateString("es-CO", { day: "numeric", month: "short" })}, {ACTIVITY_TYPES[t.tipoTurno].label.toLowerCase()}, {t.horas}h
+                  {t.cubrePersonalId && <> · cubriendo a <strong>{personName(t.cubrePersonalId)}</strong></>}
+                  {t.motivo && <span style={{ color: T.muted }}> · {t.motivo}</span>}
+                </span>
+                {isMaestro && (
+                  <button onClick={() => eliminarTurnoExtra(t.id)} className="shrink-0" style={{ color: T.muted }}><Trash2 size={13} /></button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="flex flex-col gap-3">
         {novedades.map((n) => {
@@ -4677,6 +4742,7 @@ function Novedades({ ctx }) {
       </div>
 
       {modalOpen && <NovedadModal ctx={ctx} onClose={() => setModalOpen(false)} />}
+      {turnoExtraModalOpen && <TurnoExtraModal ctx={ctx} onClose={() => setTurnoExtraModalOpen(false)} />}
     </div>
   );
 }
@@ -4735,6 +4801,88 @@ function NovedadModal({ ctx, onClose }) {
     </div>
   );
 }
+
+function TurnoExtraModal({ ctx, onClose }) {
+  const { personal, events, agregarTurnoExtra, saving } = ctx;
+  const [personalId, setPersonalId] = useState("");
+  const [turnoId, setTurnoId] = useState("");
+  const [cubrePersonalId, setCubrePersonalId] = useState("");
+  const [motivo, setMotivo] = useState("");
+
+  // Turnos de esa persona, de los últimos 45 días hasta 15 días adelante,
+  // para no obligarla a buscar entre años de historial.
+  const hoy = toISO(TODAY);
+  const desde = toISO(addDays(TODAY, -45));
+  const hasta = toISO(addDays(TODAY, 15));
+  const turnosDeLaPersona = personalId
+    ? events
+        .filter((e) => TURNO_TYPES.includes(e.type) && e.personalId === personalId && e.date >= desde && e.date <= hasta)
+        .sort((a, b) => b.date.localeCompare(a.date))
+    : [];
+
+  async function guardar() {
+    const ok = await agregarTurnoExtra({ turnoId, cubrePersonalId, motivo });
+    if (ok) onClose();
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="ev-card w-full max-w-sm p-5">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="ev-display font-semibold text-[16px]">Registrar turno extra</h3>
+          <button onClick={onClose}><X size={18} /></button>
+        </div>
+        <p className="text-[12px] mb-3.5" style={{ color: T.muted }}>
+          Elige el turno real del calendario que fue adicional — la fecha y las horas se toman directo de ahí, tú no las escribes.
+        </p>
+        <div className="flex flex-col gap-3.5">
+          <Field label="Persona que hizo el turno extra">
+            <select value={personalId} onChange={(e) => { setPersonalId(e.target.value); setTurnoId(""); }} style={inputStyle}>
+              <option value="">Selecciona…</option>
+              {personal.map((p) => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+            </select>
+          </Field>
+          {personalId && (
+            <Field label="¿Cuál turno fue el extra?">
+              <select value={turnoId} onChange={(e) => setTurnoId(e.target.value)} style={inputStyle}>
+                <option value="">Selecciona…</option>
+                {turnosDeLaPersona.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {new Date(`${t.date}T00:00:00`).toLocaleDateString("es-CO", { weekday: "short", day: "numeric", month: "short" })} · {ACTIVITY_TYPES[t.type].label} · {horasEfectivas(t)}h
+                  </option>
+                ))}
+              </select>
+              {turnosDeLaPersona.length === 0 && (
+                <p className="text-[11px] mt-1" style={{ color: T.muted }}>Esta persona no tiene turnos asignados entre el {desde} y el {hasta}.</p>
+              )}
+            </Field>
+          )}
+          <Field label="¿A quién está cubriendo? (opcional)">
+            <select value={cubrePersonalId} onChange={(e) => setCubrePersonalId(e.target.value)} style={inputStyle}>
+              <option value="">— Ninguno en particular —</option>
+              {personal.filter((p) => p.id !== personalId).map((p) => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+            </select>
+          </Field>
+          <Field label="Motivo (opcional)">
+            <input value={motivo} onChange={(e) => setMotivo(e.target.value)} placeholder="Ej. cubrió la incapacidad de Jose Villa" style={inputStyle} />
+          </Field>
+        </div>
+        <div className="flex justify-end gap-2 mt-5">
+          <button onClick={onClose} className="ev-btn px-4 py-2 text-[13px]" style={{ border: `1px solid ${T.border}` }}>Cancelar</button>
+          <button
+            onClick={guardar}
+            disabled={!turnoId || saving}
+            className="ev-btn px-4 py-2 text-[13px] text-white disabled:opacity-40"
+            style={{ background: T.primary }}
+          >
+            {saving ? "Guardando…" : "Guardar"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 function Biblioteca({ ctx }) {
   const { biblioteca, isMaestro, setBibModal, deleteBiblioteca } = ctx;
