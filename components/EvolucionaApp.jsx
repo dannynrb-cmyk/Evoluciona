@@ -1452,11 +1452,16 @@ export default function EvolucionaApp() {
   async function agregarTurnoExtra(form) {
     setSaving(true);
     try {
-      const turno = events.find((e) => e.id === form.turnoId);
-      if (!turno) throw new Error("No se encontró ese turno.");
+      if (!form.personalId) throw new Error("Falta elegir la persona.");
+      if (!form.fecha) throw new Error("Falta la fecha.");
+      if (!form.horas || Number(form.horas) <= 0) throw new Error("Las horas deben ser mayores a 0.");
+      // Si por casualidad existe un turno real ese día/tipo para esa persona,
+      // se enlaza (útil para reportes), pero nunca es obligatorio — la fecha,
+      // el tipo de turno y las horas las decide quien registra, manualmente.
+      const turnoReal = events.find((e) => e.personalId === form.personalId && e.date === form.fecha && e.type === form.tipoTurno);
       const saved = await insertTurnoExtraRemote({
-        turnoId: turno.id, personalId: turno.personalId, fecha: turno.date,
-        tipoTurno: turno.type, horas: horasEfectivas(turno),
+        turnoId: turnoReal ? turnoReal.id : null, personalId: form.personalId, fecha: form.fecha,
+        tipoTurno: form.tipoTurno, horas: Number(form.horas),
         cubrePersonalId: form.cubrePersonalId || null, motivo: form.motivo || "",
       });
       setTurnosExtra((prev) => [saved, ...prev]);
@@ -4893,25 +4898,16 @@ function NovedadModal({ ctx, onClose }) {
 }
 
 function TurnoExtraModal({ ctx, onClose }) {
-  const { personal, events, agregarTurnoExtra, saving } = ctx;
+  const { personal, agregarTurnoExtra, saving } = ctx;
   const [personalId, setPersonalId] = useState("");
-  const [turnoId, setTurnoId] = useState("");
+  const [fecha, setFecha] = useState(toISO(TODAY));
+  const [tipoTurno, setTipoTurno] = useState("turno_dia");
+  const [horas, setHoras] = useState(10);
   const [cubrePersonalId, setCubrePersonalId] = useState("");
   const [motivo, setMotivo] = useState("");
 
-  // Turnos de esa persona, de los últimos 45 días hasta 15 días adelante,
-  // para no obligarla a buscar entre años de historial.
-  const hoy = toISO(TODAY);
-  const desde = toISO(addDays(TODAY, -45));
-  const hasta = toISO(addDays(TODAY, 15));
-  const turnosDeLaPersona = personalId
-    ? events
-        .filter((e) => TURNO_TYPES.includes(e.type) && e.personalId === personalId && e.date >= desde && e.date <= hasta)
-        .sort((a, b) => b.date.localeCompare(a.date))
-    : [];
-
   async function guardar() {
-    const ok = await agregarTurnoExtra({ turnoId, cubrePersonalId, motivo });
+    const ok = await agregarTurnoExtra({ personalId, fecha, tipoTurno, horas, cubrePersonalId, motivo });
     if (ok) onClose();
   }
 
@@ -4923,30 +4919,29 @@ function TurnoExtraModal({ ctx, onClose }) {
           <button onClick={onClose}><X size={18} /></button>
         </div>
         <p className="text-[12px] mb-3.5" style={{ color: T.muted }}>
-          Elige el turno real del calendario que fue adicional — la fecha y las horas se toman directo de ahí, tú no las escribes.
+          Elige tú mismo la fecha, el turno y las horas — no depende de que ese turno ya exista en el calendario.
         </p>
         <div className="flex flex-col gap-3.5">
           <Field label="Persona que hizo el turno extra">
-            <select value={personalId} onChange={(e) => { setPersonalId(e.target.value); setTurnoId(""); }} style={inputStyle}>
+            <select value={personalId} onChange={(e) => setPersonalId(e.target.value)} style={inputStyle}>
               <option value="">Selecciona…</option>
               {personal.map((p) => <option key={p.id} value={p.id}>{p.nombre}</option>)}
             </select>
           </Field>
-          {personalId && (
-            <Field label="¿Cuál turno fue el extra?">
-              <select value={turnoId} onChange={(e) => setTurnoId(e.target.value)} style={inputStyle}>
-                <option value="">Selecciona…</option>
-                {turnosDeLaPersona.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {new Date(`${t.date}T00:00:00`).toLocaleDateString("es-CO", { weekday: "short", day: "numeric", month: "short" })} · {ACTIVITY_TYPES[t.type].label} · {horasEfectivas(t)}h
-                  </option>
-                ))}
-              </select>
-              {turnosDeLaPersona.length === 0 && (
-                <p className="text-[11px] mt-1" style={{ color: T.muted }}>Esta persona no tiene turnos asignados entre el {desde} y el {hasta}.</p>
-              )}
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Fecha">
+              <input type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} style={inputStyle} />
             </Field>
-          )}
+            <Field label="Turno">
+              <select value={tipoTurno} onChange={(e) => setTipoTurno(e.target.value)} style={inputStyle}>
+                <option value="turno_dia">Día</option>
+                <option value="turno_noche">Noche</option>
+              </select>
+            </Field>
+          </div>
+          <Field label="Horas">
+            <input type="number" min="0.5" step="0.5" value={horas} onChange={(e) => setHoras(e.target.value)} style={inputStyle} />
+          </Field>
           <Field label="¿A quién está cubriendo? (opcional)">
             <select value={cubrePersonalId} onChange={(e) => setCubrePersonalId(e.target.value)} style={inputStyle}>
               <option value="">— Ninguno en particular —</option>
@@ -4961,7 +4956,7 @@ function TurnoExtraModal({ ctx, onClose }) {
           <button onClick={onClose} className="ev-btn px-4 py-2 text-[13px]" style={{ border: `1px solid ${T.border}` }}>Cancelar</button>
           <button
             onClick={guardar}
-            disabled={!turnoId || saving}
+            disabled={!personalId || !fecha || !horas || saving}
             className="ev-btn px-4 py-2 text-[13px] text-white disabled:opacity-40"
             style={{ background: T.primary }}
           >
