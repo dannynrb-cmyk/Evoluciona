@@ -141,22 +141,53 @@ ${contexto}`;
       { role: "user", parts: partesPregunta },
     ];
 
-    const geminiRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${GEMINI_KEY}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: systemInstruction }] },
-          contents,
-          generationConfig: { maxOutputTokens: 4096 },
-        }),
+    // Modelos a intentar en orden (si uno está saturado o no existe, pasa al siguiente).
+    const MODELOS = [
+      process.env.GEMINI_MODEL || "gemini-3.6-flash",
+      "gemini-3.7-flash",
+      "gemini-3.8-flash",
+    ].filter((m, i, arr) => arr.indexOf(m) === i);
+    const cuerpo = JSON.stringify({
+      systemInstruction: { parts: [{ text: systemInstruction }] },
+      contents,
+      generationConfig: { maxOutputTokens: 4096 },
+    });
+    const inicio = Date.now();
+    const espera = (ms) => new Promise((r) => setTimeout(r, ms));
+    let geminiData = null;
+    let ultimoStatus = 0;
+    let ultimoMsg = "";
+    let ok = false;
+    for (let i = 0; i < MODELOS.length && !ok; i++) {
+      // Hasta 2 intentos por modelo, con una pausa corta, cuidando el límite de tiempo.
+      for (let intento = 0; intento < 2 && !ok; intento++) {
+        if (Date.now() - inicio > 40000) break;
+        try {
+          const res = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/${MODELOS[i]}:generateContent?key=${GEMINI_KEY}`,
+            { method: "POST", headers: { "Content-Type": "application/json" }, body: cuerpo }
+          );
+          const data = await res.json().catch(() => ({}));
+          if (res.ok) { geminiData = data; ok = true; break; }
+          ultimoStatus = res.status;
+          ultimoMsg = data?.error?.message || "";
+          console.error("Evo: fallo Gemini", MODELOS[i], res.status, JSON.stringify(data));
+          if (res.status === 503 || res.status === 429 || res.status === 500) {
+            await espera(1500 * (intento + 1));
+            continue; // reintenta el mismo modelo
+          }
+          break; // 404/400/etc: pasa al siguiente modelo
+        } catch (e) {
+          ultimoMsg = e.message;
+          await espera(1000);
+        }
       }
-    );
-    const geminiData = await geminiRes.json();
-    if (!geminiRes.ok) {
-      console.error("Evo: fallo consultando Gemini ->", geminiRes.status, JSON.stringify(geminiData));
-      const msg = geminiData?.error?.message || `Error ${geminiRes.status} al consultar la IA.`;
+    }
+    if (!ok) {
+      const saturado = [503, 429, 500].includes(ultimoStatus);
+      const msg = saturado
+        ? "Evo está con mucha demanda en este momento (el servicio de IA de Google está saturado). Intenta de nuevo en un minuto."
+        : ultimoMsg || `Error ${ultimoStatus} al consultar la IA.`;
       return Response.json({ error: msg }, { status: 502 });
     }
     const respuesta = geminiData.candidates?.[0]?.content?.parts?.map((p) => p.text).join("").trim()
