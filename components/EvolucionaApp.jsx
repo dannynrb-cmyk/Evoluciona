@@ -920,9 +920,9 @@ const NAV = [
   { key: "biblioteca", label: "Biblioteca", icon: BookOpen },
   { key: "formacion", label: "Formación Continua", icon: GraduationCap },
   { key: "evo", label: "Evo", icon: Bot },
-  { key: "personal", label: "Personal", icon: Users },
-  { key: "reportes", label: "Reportes", icon: FileBarChart },
-  { key: "configuracion", label: "Configuración", icon: Settings },
+  { key: "personal", label: "Personal", icon: Users, soloMaestro: true },
+  { key: "reportes", label: "Reportes", icon: FileBarChart, soloMaestro: true },
+  { key: "configuracion", label: "Configuración", icon: Settings, soloMaestro: true },
 ];
 const TURNO_TYPES = ["turno_dia", "turno_noche"];
 const ACTIVIDAD_TYPES = Object.keys(ACTIVITY_TYPES).filter((k) => !TURNO_TYPES.includes(k));
@@ -1813,7 +1813,7 @@ export default function EvolucionaApp() {
             </p>
           </div>
           <nav className="px-3 flex flex-col gap-1">
-            {NAV.map((n) => {
+            {NAV.filter((n) => !n.soloMaestro || isMaestro).map((n) => {
               const Icon = n.icon;
               const active = view === n.key;
               return (
@@ -1881,16 +1881,16 @@ export default function EvolucionaApp() {
         </header>
 
         <main className="flex-1 overflow-y-auto ev-scroll p-5 lg:p-8">
-          {view === "dashboard" && <Dashboard ctx={ctx} />}
+          {(view === "dashboard" || (!isMaestro && NAV.some((n) => n.key === view && n.soloMaestro))) && <Dashboard ctx={ctx} />}
           {view === "actividades" && <ActividadesCalendario ctx={ctx} />}
           {view === "turnos" && <TurnosCalendario ctx={ctx} />}
           {view === "novedades" && <Novedades ctx={ctx} />}
           {view === "biblioteca" && <Biblioteca ctx={ctx} />}
           {view === "formacion" && <FormacionContinua ctx={ctx} />}
           {view === "evo" && <EvoChat ctx={ctx} />}
-          {view === "personal" && <Personal ctx={ctx} />}
-          {view === "reportes" && <Reportes ctx={ctx} />}
-          {view === "configuracion" && <Configuracion ctx={ctx} />}
+          {view === "personal" && isMaestro && <Personal ctx={ctx} />}
+          {view === "reportes" && isMaestro && <Reportes ctx={ctx} />}
+          {view === "configuracion" && isMaestro && <Configuracion ctx={ctx} />}
         </main>
       </div>
 
