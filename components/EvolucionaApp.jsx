@@ -2884,6 +2884,429 @@ function TurnosMesGrid({ ctx, filtroPersonalId }) {
 }
 
 /* ============================== TURNOS (calendario) ============================== */
+// ============================================================================
+// LIQUIDACIÓN ESTIMADA (solo Maestro) — convierte los turnos en una estimación
+// económica del periodo. Es una ESTIMACIÓN: no reemplaza la nómina ni la factura.
+// Los porcentajes vienen de `liquidacion_config` y son editables.
+// ============================================================================
+const LIQ_CONFIG_DEFAULT = {
+  nocheInicio: 19, nocheFin: 6, divisorMensual: 210, jornadaSemanalMax: 42,
+  pctRecargoNocturno: 35, pctExtraDiurna: 25, pctExtraNocturna: 75, pctRecargoDominical: 90,
+  pctPsNocturno: 35, pctPsDominical: 90, pctPsNoctDominical: 125,
+};
+function mapLiqConfig(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    nocheInicio: Number(row.noche_inicio), nocheFin: Number(row.noche_fin),
+    divisorMensual: Number(row.divisor_mensual), jornadaSemanalMax: Number(row.jornada_semanal_max),
+    pctRecargoNocturno: Number(row.pct_recargo_nocturno), pctExtraDiurna: Number(row.pct_extra_diurna),
+    pctExtraNocturna: Number(row.pct_extra_nocturna), pctRecargoDominical: Number(row.pct_recargo_dominical),
+    pctPsNocturno: Number(row.pct_ps_nocturno), pctPsDominical: Number(row.pct_ps_dominical),
+    pctPsNoctDominical: Number(row.pct_ps_noct_dominical),
+  };
+}
+function liqConfigPayload(f) {
+  return {
+    noche_inicio: Number(f.nocheInicio), noche_fin: Number(f.nocheFin),
+    divisor_mensual: Number(f.divisorMensual), jornada_semanal_max: Number(f.jornadaSemanalMax),
+    pct_recargo_nocturno: Number(f.pctRecargoNocturno), pct_extra_diurna: Number(f.pctExtraDiurna),
+    pct_extra_nocturna: Number(f.pctExtraNocturna), pct_recargo_dominical: Number(f.pctRecargoDominical),
+    pct_ps_nocturno: Number(f.pctPsNocturno), pct_ps_dominical: Number(f.pctPsDominical),
+    pct_ps_noct_dominical: Number(f.pctPsNoctDominical), updated_at: new Date().toISOString(),
+  };
+}
+function useLiquidacionDatos() {
+  const [config, setConfig] = useState(null);
+  const [rem, setRem] = useState({});
+  const [error, setError] = useState(null);
+  const [cargando, setCargando] = useState(true);
+  const recargar = React.useCallback(async () => {
+    setCargando(true);
+    try {
+      const [cfgRows, remRows] = await Promise.all([sb("liquidacion_config?select=*&limit=1"), sb("liquidacion_personal?select=*")]);
+      setConfig(mapLiqConfig(cfgRows?.[0]));
+      const m = {};
+      (remRows || []).forEach((r) => { m[r.personal_id] = { modalidad: r.modalidad, salarioBase: Number(r.salario_base) || 0, valorHora: Number(r.valor_hora) || 0 }; });
+      setRem(m);
+      setError(null);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setCargando(false);
+    }
+  }, []);
+  React.useEffect(() => { recargar(); }, [recargar]);
+  return { config, rem, error, cargando, recargar };
+}
+const fmtCOP = (n) => new Intl.NumberFormat("es-CO", { style: "currency", currency: "COP", maximumFractionDigits: 0 }).format(Math.round(n || 0));
+const fmtH = (n) => (Math.round((n || 0) * 100) / 100).toLocaleString("es-CO");
+
+// Divide un turno en tramos de 1 hora y clasifica cada uno (noche / domingo-festivo).
+// Las horas de descanso del turno noche se reparten proporcionalmente.
+function segmentosDeTurno(t, cfg, festivoSet) {
+  const bruto = t.end - t.start;
+  const factor = bruto > 0 ? horasEfectivas(t) / bruto : 1;
+  const out = [];
+  for (let h = t.start; h < t.end - 1e-9; h += 1) {
+    const tramo = Math.min(1, t.end - h);
+    const medio = h + tramo / 2;
+    const hd = ((Math.floor(medio) % 24) + 24) % 24;
+    const noche = cfg.nocheInicio > cfg.nocheFin ? (hd >= cfg.nocheInicio || hd < cfg.nocheFin) : (hd >= cfg.nocheInicio && hd < cfg.nocheFin);
+    const fechaReal = toISO(addDays(new Date(`${t.date}T00:00:00`), Math.floor(medio / 24)));
+    const dom = new Date(`${fechaReal}T00:00:00`).getDay() === 0 || festivoSet.has(fechaReal);
+    out.push({ noche, dom, horas: tramo * factor });
+  }
+  return out;
+}
+const LIQ_CLASES = [
+  { k: "D", nombre: "Diurna ordinaria" },
+  { k: "N", nombre: "Nocturna" },
+  { k: "DF", nombre: "Dominical / festiva diurna" },
+  { k: "NF", nombre: "Nocturna dominical / festiva" },
+];
+function claveClase(noche, dom) { return `${noche ? "N" : "D"}${dom ? "F" : ""}`; }
+
+function calcularLiquidacion({ persona, rem, config, turnos, turnosExtra, festivoSet, desde, hasta }) {
+  const cfg = config || LIQ_CONFIG_DEFAULT;
+  const modalidad = rem?.modalidad || "laboral";
+  const horasOrd = { D: 0, N: 0, DF: 0, NF: 0 };
+  const horasExt = { D: 0, N: 0, DF: 0, NF: 0 };
+  const umbral = modalidad === "laboral" ? (persona.horas > 0 ? persona.horas : cfg.jornadaSemanalMax) : Infinity;
+  const acumSemana = {};
+  const suyos = turnos.filter((t) => t.personalId === persona.id).sort((a, b) => a.date.localeCompare(b.date) || a.start - b.start);
+  suyos.forEach((t) => {
+    const semana = toISO(getMonday(new Date(`${t.date}T00:00:00`)));
+    segmentosDeTurno(t, cfg, festivoSet).forEach((s) => {
+      const antes = acumSemana[semana] || 0;
+      acumSemana[semana] = antes + s.horas;
+      if (t.date < desde || t.date > hasta) return;
+      const ordinaria = Math.max(0, Math.min(s.horas, umbral - antes));
+      const extra = s.horas - ordinaria;
+      const k = claveClase(s.noche, s.dom);
+      horasOrd[k] += ordinaria;
+      horasExt[k] += extra;
+    });
+  });
+  // Turnos extra registrados manualmente en Novedades: todas sus horas son adicionales.
+  const extrasRegistrados = (turnosExtra || []).filter((x) => x.personalId === persona.id && x.fecha >= desde && x.fecha <= hasta);
+  let horasExtraRegistradas = 0;
+  extrasRegistrados.forEach((x) => {
+    const dom = new Date(`${x.fecha}T00:00:00`).getDay() === 0 || festivoSet.has(x.fecha);
+    const k = claveClase(x.tipoTurno === "turno_noche", dom);
+    horasExt[k] += x.horas;
+    horasExtraRegistradas += x.horas;
+  });
+
+  const lineas = [];
+  let total = 0;
+  const totalHoras = Object.values(horasOrd).reduce((a, b) => a + b, 0) + Object.values(horasExt).reduce((a, b) => a + b, 0);
+  const dom = cfg.pctRecargoDominical / 100;
+
+  if (modalidad === "prestacion") {
+    const vh = rem?.valorHora || 0;
+    const mult = { D: 1, N: 1 + cfg.pctPsNocturno / 100, DF: 1 + cfg.pctPsDominical / 100, NF: 1 + cfg.pctPsNoctDominical / 100 };
+    LIQ_CLASES.forEach(({ k, nombre }) => {
+      const h = horasOrd[k] + horasExt[k];
+      const valor = h * vh * mult[k];
+      total += valor;
+      lineas.push({ concepto: `Horas ${nombre.toLowerCase()}`, horas: h, valor, nota: `${fmtCOP(vh * mult[k])} por hora` });
+    });
+    return { modalidad, lineas, total, totalHoras, horasExtraRegistradas, configurado: vh > 0, subtotalBase: 0 };
+  }
+
+  // Contrato laboral
+  const salario = rem?.salarioBase || 0;
+  const vh = salario / (cfg.divisorMensual || 210);
+  const ini = new Date(`${desde}T00:00:00`), fin = new Date(`${hasta}T00:00:00`);
+  const mesCompleto = ini.getDate() === 1 && ini.getMonth() === fin.getMonth() && ini.getFullYear() === fin.getFullYear()
+    && fin.getDate() === new Date(fin.getFullYear(), fin.getMonth() + 1, 0).getDate();
+  const dias = Math.round((fin - ini) / 86400000) + 1;
+  const salarioPeriodo = mesCompleto ? salario : salario * Math.min(dias, 30) / 30;
+  lineas.push({ concepto: mesCompleto ? "Salario base (mes)" : `Salario base (${dias} días, proporcional)`, horas: null, valor: salarioPeriodo, nota: `Valor hora ordinaria ${fmtCOP(vh)}` });
+  total += salarioPeriodo;
+  const recargos = [
+    ["N", "Recargo nocturno", cfg.pctRecargoNocturno / 100],
+    ["DF", "Recargo dominical / festivo", dom],
+    ["NF", "Recargo nocturno dominical / festivo", cfg.pctRecargoNocturno / 100 + dom],
+  ];
+  recargos.forEach(([k, nombre, p]) => {
+    const h = horasOrd[k];
+    const valor = h * vh * p;
+    total += valor;
+    lineas.push({ concepto: nombre, horas: h, valor, nota: `${Math.round(p * 100)}% sobre la hora ordinaria` });
+  });
+  const extras = [
+    ["D", "Horas extra diurnas", 1 + cfg.pctExtraDiurna / 100],
+    ["N", "Horas extra nocturnas", 1 + cfg.pctExtraNocturna / 100],
+    ["DF", "Horas extra diurnas dominical / festivo", 1 + cfg.pctExtraDiurna / 100 + dom],
+    ["NF", "Horas extra nocturnas dominical / festivo", 1 + cfg.pctExtraNocturna / 100 + dom],
+  ];
+  extras.forEach(([k, nombre, m]) => {
+    const h = horasExt[k];
+    const valor = h * vh * m;
+    total += valor;
+    lineas.push({ concepto: nombre, horas: h, valor, nota: `${Math.round(m * 100)}% de la hora ordinaria` });
+  });
+  return { modalidad, lineas, total, totalHoras, horasExtraRegistradas, configurado: salario > 0, subtotalBase: salarioPeriodo };
+}
+
+function LiquidacionPanel({ ctx, turnos, personas, filtroPersonal, setFiltroPersonal, desde, hasta, festivoSet, etiquetaPeriodo }) {
+  const { config, rem, error, cargando } = useLiquidacionDatos();
+  const [bonif, setBonif] = useState("");
+  const [desc, setDesc] = useState("");
+  const turnosExtra = ctx.turnosExtra;
+  const filas = personas.map((p) => ({ p, r: calcularLiquidacion({ persona: p, rem: rem[p.id], config, turnos, turnosExtra, festivoSet, desde, hasta }) }));
+  const sel = filtroPersonal ? filas.find((f) => f.p.id === filtroPersonal) : null;
+  const totalGeneral = filas.reduce((a, f) => a + f.r.total, 0);
+  return (
+    <div className="ev-card overflow-hidden max-w-3xl">
+      <div className="px-4 py-3 border-b" style={{ borderColor: T.border }}>
+        <h3 className="ev-display font-semibold text-[13.5px] flex items-center gap-1.5"><FileBarChart size={14} /> Resumen de liquidación estimada · {etiquetaPeriodo}</h3>
+        <p className="text-[11.5px]" style={{ color: T.muted }}>
+          Solo visible para el Maestro. Es una estimación para consulta y validación previa; no reemplaza la nómina ni la facturación oficial.
+        </p>
+      </div>
+      {cargando && <p className="px-4 py-4 text-[12.5px]" style={{ color: T.muted }}>Cargando parámetros…</p>}
+      {!cargando && (error || !config) && (
+        <p className="px-4 py-4 text-[12.5px]" style={{ color: T.danger }}>
+          No se pudieron leer los parámetros de liquidación{error ? ` (${error})` : ""}. Revisa que ya corriste el archivo <strong>liquidacion.sql</strong> en Supabase.
+        </p>
+      )}
+      {!cargando && config && !sel && (
+        <div className="overflow-x-auto ev-scroll">
+          <table className="w-full text-[13.5px]">
+            <thead>
+              <tr className="text-left" style={{ color: T.muted }}>
+                <th className="px-4 py-2 font-medium text-[12px] uppercase tracking-wide">Colaborador</th>
+                <th className="px-3 py-2 font-medium text-[12px] uppercase tracking-wide">Modalidad</th>
+                <th className="px-3 py-2 font-medium text-[12px] uppercase tracking-wide text-right">Horas</th>
+                <th className="px-3 py-2 font-medium text-[12px] uppercase tracking-wide text-right">Total estimado</th>
+                <th className="px-3 py-2" />
+              </tr>
+            </thead>
+            <tbody>
+              {filas.map(({ p, r }) => (
+                <tr key={p.id} className="border-t" style={{ borderColor: T.border }}>
+                  <td className="px-4 py-2.5 font-medium">{p.nombre}</td>
+                  <td className="px-3 py-2.5" style={{ color: T.muted }}>{r.modalidad === "prestacion" ? "Prestación de servicios" : "Contrato laboral"}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums">{fmtH(r.totalHoras)}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums font-semibold">
+                    {r.configurado ? fmtCOP(r.total) : <span style={{ color: T.muted }} className="font-normal">Sin configurar</span>}
+                  </td>
+                  <td className="px-3 py-2.5 text-right">
+                    <button onClick={() => setFiltroPersonal(p.id)} className="text-[12px] font-semibold" style={{ color: T.primary }}>Ver detalle</button>
+                  </td>
+                </tr>
+              ))}
+              {filas.length > 0 && (
+                <tr className="border-t" style={{ borderColor: T.border }}>
+                  <td className="px-4 py-2.5 font-semibold" colSpan={3}>Total del servicio (estimado)</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums font-semibold">{fmtCOP(totalGeneral)}</td>
+                  <td />
+                </tr>
+              )}
+              {filas.length === 0 && (
+                <tr><td colSpan={5} className="px-4 py-5 text-center" style={{ color: T.muted }}>No hay colaboradores para mostrar.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {!cargando && config && sel && (() => {
+        const b = Number(String(bonif).replace(/[^\d.]/g, "")) || 0;
+        const d = Number(String(desc).replace(/[^\d.]/g, "")) || 0;
+        const r = sel.r;
+        const totalFinal = r.total + b - d;
+        return (
+          <div className="p-4 flex flex-col gap-3">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div>
+                <p className="font-semibold text-[14px]">{sel.p.nombre}</p>
+                <p className="text-[12px]" style={{ color: T.muted }}>
+                  {r.modalidad === "prestacion" ? "Prestación de servicios" : "Contrato laboral"} · {fmtH(r.totalHoras)} h en el periodo
+                  {r.horasExtraRegistradas > 0 ? ` (incluye ${fmtH(r.horasExtraRegistradas)} h de turnos extra registrados)` : ""}
+                </p>
+              </div>
+              <button onClick={() => setFiltroPersonal("")} className="ev-btn px-3 py-1.5 text-[12px]" style={{ border: `1px solid ${T.border}` }}>Ver a todos</button>
+            </div>
+            {!r.configurado && (
+              <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-[12.5px]" style={{ background: T.accentSoft, color: T.accentInk }}>
+                <AlertTriangle size={14} /> Falta configurar {r.modalidad === "prestacion" ? "el valor de la hora" : "el salario base"} de esta persona en Configuración → Parámetros de liquidación.
+              </div>
+            )}
+            <table className="w-full text-[13.5px]">
+              <thead>
+                <tr className="text-left" style={{ color: T.muted }}>
+                  <th className="py-1.5 font-medium text-[12px] uppercase tracking-wide">Concepto</th>
+                  <th className="py-1.5 font-medium text-[12px] uppercase tracking-wide text-right">Horas</th>
+                  <th className="py-1.5 font-medium text-[12px] uppercase tracking-wide text-right">Valor</th>
+                </tr>
+              </thead>
+              <tbody>
+                {r.lineas.map((l, i) => (
+                  <tr key={i} className="border-t" style={{ borderColor: T.border }}>
+                    <td className="py-2">
+                      {l.concepto}
+                      {l.nota && <span className="block text-[11px]" style={{ color: T.muted }}>{l.nota}</span>}
+                    </td>
+                    <td className="py-2 text-right tabular-nums">{l.horas == null ? "—" : fmtH(l.horas)}</td>
+                    <td className="py-2 text-right tabular-nums">{fmtCOP(l.valor)}</td>
+                  </tr>
+                ))}
+                <tr className="border-t" style={{ borderColor: T.border }}>
+                  <td className="py-2">Bonificaciones <span className="text-[11px]" style={{ color: T.muted }}>(opcional, no se guarda)</span></td>
+                  <td />
+                  <td className="py-1.5 text-right"><input value={bonif} onChange={(e) => setBonif(e.target.value)} placeholder="0" inputMode="numeric" style={{ ...inputStyle, width: 130, padding: "6px 10px", textAlign: "right" }} /></td>
+                </tr>
+                <tr className="border-t" style={{ borderColor: T.border }}>
+                  <td className="py-2">Descuentos <span className="text-[11px]" style={{ color: T.muted }}>(opcional, no se guarda)</span></td>
+                  <td />
+                  <td className="py-1.5 text-right"><input value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="0" inputMode="numeric" style={{ ...inputStyle, width: 130, padding: "6px 10px", textAlign: "right" }} /></td>
+                </tr>
+                <tr className="border-t-2" style={{ borderColor: T.border }}>
+                  <td className="py-2.5 font-semibold" colSpan={2}>{r.modalidad === "prestacion" ? "Total estimado a facturar" : "Total estimado a recibir"}</td>
+                  <td className="py-2.5 text-right tabular-nums font-semibold text-[15px]" style={{ color: T.primaryDark }}>{fmtCOP(totalFinal)}</td>
+                </tr>
+              </tbody>
+            </table>
+            {r.modalidad === "laboral" && (
+              <p className="text-[11.5px]" style={{ color: T.muted }}>
+                Las horas ordinarias ya están dentro del salario; aquí solo se suman recargos y horas extra. Se consideran extra las horas que superan las {fmtH(sel.p.horas > 0 ? sel.p.horas : config.jornadaSemanalMax)} h semanales de esta persona, más los turnos extra registrados en Novedades. Valor bruto, antes de aportes y deducciones de ley.
+              </p>
+            )}
+          </div>
+        );
+      })()}
+    </div>
+  );
+}
+
+function LiquidacionConfigCard({ ctx }) {
+  const { personal, showToast } = ctx;
+  const { config, rem, error, cargando, recargar } = useLiquidacionDatos();
+  const [form, setForm] = useState(null);
+  const [filas, setFilas] = useState({});
+  const [guardando, setGuardando] = useState(false);
+  React.useEffect(() => { if (config) setForm({ ...config }); }, [config]);
+  React.useEffect(() => { setFilas(JSON.parse(JSON.stringify(rem))); }, [rem]);
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+  const fila = (id) => filas[id] || { modalidad: "laboral", salarioBase: 0, valorHora: 0 };
+  const setFila = (id, patch) => setFilas((f) => ({ ...f, [id]: { ...fila(id), ...patch } }));
+
+  async function guardar() {
+    setGuardando(true);
+    try {
+      await sb(`liquidacion_config?id=eq.${form.id}`, { method: "PATCH", body: JSON.stringify(liqConfigPayload(form)) });
+      const cuerpo = personal.map((p) => {
+        const f = fila(p.id);
+        return { personal_id: p.id, modalidad: f.modalidad, salario_base: Number(f.salarioBase) || 0, valor_hora: Number(f.valorHora) || 0, updated_at: new Date().toISOString() };
+      });
+      if (cuerpo.length) await sb("liquidacion_personal", { method: "POST", body: JSON.stringify(cuerpo), prefer: "resolution=merge-duplicates,return=minimal" });
+      await recargar();
+      showToast("Parámetros de liquidación guardados");
+    } catch (e) {
+      showToast(`No se pudo guardar: ${e.message}`, "warn");
+    } finally {
+      setGuardando(false);
+    }
+  }
+  const num = (k, label, sufijo) => (
+    <Field label={label}>
+      <div className="flex items-center gap-1.5">
+        <input type="number" step="any" value={form[k]} onChange={(e) => set(k, e.target.value)} style={inputStyle} />
+        {sufijo && <span className="text-[12px]" style={{ color: T.muted }}>{sufijo}</span>}
+      </div>
+    </Field>
+  );
+  return (
+    <div className="ev-card p-5 flex flex-col gap-4">
+      <div>
+        <h3 className="ev-display font-semibold text-[14px]">Parámetros de liquidación</h3>
+        <p className="text-[12px]" style={{ color: T.muted }}>
+          Solo el Maestro los ve. Los valores iniciales siguen la normativa colombiana (recargo nocturno desde las 7 p. m.; recargo dominical/festivo 90 % desde el 1 de julio de 2026 y 100 % desde julio de 2027; jornada de 42 h desde el 15 de julio de 2026). Verifica siempre con tu área legal o contable: son editables por si cambian.
+        </p>
+      </div>
+      {cargando && <p className="text-[12.5px]" style={{ color: T.muted }}>Cargando…</p>}
+      {!cargando && (error || !form) && (
+        <p className="text-[12.5px]" style={{ color: T.danger }}>No se pudo leer la configuración{error ? ` (${error})` : ""}. Corre primero el archivo <strong>liquidacion.sql</strong> en Supabase.</p>
+      )}
+      {form && (
+        <>
+          <div>
+            <p className="text-[12px] font-semibold uppercase tracking-wide mb-2" style={{ color: T.muted }}>Horarios y jornada</p>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              {num("nocheInicio", "Inicio recargo nocturno", "h (0-24)")}
+              {num("nocheFin", "Fin recargo nocturno", "h (0-24)")}
+              {num("jornadaSemanalMax", "Jornada semanal máxima", "h")}
+              {num("divisorMensual", "Horas mensuales (divisor)", "h")}
+            </div>
+            <p className="text-[11.5px] mt-1.5" style={{ color: T.muted }}>Los festivos se toman de la lista de festivos de Configuración; los domingos cuentan siempre como dominical.</p>
+          </div>
+          <div>
+            <p className="text-[12px] font-semibold uppercase tracking-wide mb-2" style={{ color: T.muted }}>Contrato laboral (% sobre la hora ordinaria)</p>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              {num("pctRecargoNocturno", "Recargo nocturno", "%")}
+              {num("pctRecargoDominical", "Recargo dominical / festivo", "%")}
+              {num("pctExtraDiurna", "Hora extra diurna", "%")}
+              {num("pctExtraNocturna", "Hora extra nocturna", "%")}
+            </div>
+            <p className="text-[11.5px] mt-1.5" style={{ color: T.muted }}>El recargo nocturno dominical y las extras dominicales se calculan sumando estos porcentajes.</p>
+          </div>
+          <div>
+            <p className="text-[12px] font-semibold uppercase tracking-wide mb-2" style={{ color: T.muted }}>Prestación de servicios (valor adicional pactado sobre la hora)</p>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              {num("pctPsNocturno", "Hora nocturna", "%")}
+              {num("pctPsDominical", "Hora dominical / festiva", "%")}
+              {num("pctPsNoctDominical", "Nocturna dominical / festiva", "%")}
+            </div>
+          </div>
+          <div>
+            <p className="text-[12px] font-semibold uppercase tracking-wide mb-2" style={{ color: T.muted }}>Contratación y valores por colaborador (servicio actual)</p>
+            <div className="overflow-x-auto ev-scroll">
+              <table className="w-full text-[13px]">
+                <thead>
+                  <tr className="text-left" style={{ color: T.muted }}>
+                    <th className="py-1.5 pr-3 font-medium text-[12px]">Colaborador</th>
+                    <th className="py-1.5 pr-3 font-medium text-[12px]">Modalidad</th>
+                    <th className="py-1.5 pr-3 font-medium text-[12px]">Salario base mensual</th>
+                    <th className="py-1.5 font-medium text-[12px]">Valor hora (prestación)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {personal.map((p) => {
+                    const f = fila(p.id);
+                    const esPS = f.modalidad === "prestacion";
+                    return (
+                      <tr key={p.id} className="border-t" style={{ borderColor: T.border }}>
+                        <td className="py-2 pr-3 font-medium">{p.nombre}</td>
+                        <td className="py-2 pr-3">
+                          <select value={f.modalidad} onChange={(e) => setFila(p.id, { modalidad: e.target.value })} style={{ ...inputStyle, padding: "6px 10px" }}>
+                            <option value="laboral">Contrato laboral</option>
+                            <option value="prestacion">Prestación de servicios</option>
+                          </select>
+                        </td>
+                        <td className="py-2 pr-3"><input type="number" min={0} disabled={esPS} value={f.salarioBase || ""} onChange={(e) => setFila(p.id, { salarioBase: e.target.value })} placeholder="0" style={{ ...inputStyle, padding: "6px 10px", opacity: esPS ? 0.5 : 1 }} /></td>
+                        <td className="py-2"><input type="number" min={0} disabled={!esPS} value={f.valorHora || ""} onChange={(e) => setFila(p.id, { valorHora: e.target.value })} placeholder="0" style={{ ...inputStyle, padding: "6px 10px", opacity: !esPS ? 0.5 : 1 }} /></td>
+                      </tr>
+                    );
+                  })}
+                  {personal.length === 0 && <tr><td colSpan={4} className="py-4 text-center" style={{ color: T.muted }}>No hay personal en este servicio.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div>
+            <button onClick={guardar} disabled={guardando} className="ev-btn px-4 py-2 text-[13px] text-white disabled:opacity-60" style={{ background: T.primary }}>
+              {guardando ? "Guardando…" : "Guardar parámetros de liquidación"}
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function TurnosCalendario({ ctx }) {
   const { isMaestro, events, personal, monthOffset, setMonthOffset, setDetail, reglas, festivos, novedades, turnosExtra } = ctx;
   const turnos = events.filter((e) => TURNO_TYPES.includes(e.type));
@@ -3129,6 +3552,17 @@ function TurnosCalendario({ ctx }) {
           </table>
         </div>
       </div>
+
+      {isMaestro && (
+        <LiquidacionPanel
+          ctx={ctx} turnos={turnos} personas={personasParaTablas}
+          filtroPersonal={filtroPersonal} setFiltroPersonal={setFiltroPersonal}
+          desde={primerDiaResumen} hasta={ultimoDiaResumen} festivoSet={festivoSet}
+          etiquetaPeriodo={usarRango
+            ? `${new Date(`${rangoDesde}T00:00:00`).toLocaleDateString("es-CO", { day: "numeric", month: "short" })} – ${new Date(`${rangoHasta}T00:00:00`).toLocaleDateString("es-CO", { day: "numeric", month: "short" })}`
+            : MES_LABEL[base.getMonth()]}
+        />
+      )}
 
       <div className="ev-card overflow-hidden max-w-3xl">
         <div className="px-4 py-3 border-b" style={{ borderColor: T.border }}>
@@ -4146,6 +4580,7 @@ function Configuracion({ ctx }) {
         </div>
       )}
 
+      {isMaestro && <LiquidacionConfigCard ctx={ctx} />}
       {isMaestro && <TelegramGrupoConfig />}
       {isMaestro && <CronEjecucionesLog />}
 
