@@ -2893,6 +2893,8 @@ const LIQ_CONFIG_DEFAULT = {
   nocheInicio: 19, nocheFin: 6, divisorMensual: 210, jornadaSemanalMax: 42,
   pctRecargoNocturno: 35, pctExtraDiurna: 25, pctExtraNocturna: 75, pctRecargoDominical: 90,
   pctPsNocturno: 35, pctPsDominical: 90, pctPsNoctDominical: 125,
+  descontarDescanso: false, extrasPorExceso: false,
+  smmlv: 1750905, auxilioTransporte: 249095, pctSalud: 4, pctPension: 4,
 };
 function mapLiqConfig(row) {
   if (!row) return null;
@@ -2904,6 +2906,9 @@ function mapLiqConfig(row) {
     pctExtraNocturna: Number(row.pct_extra_nocturna), pctRecargoDominical: Number(row.pct_recargo_dominical),
     pctPsNocturno: Number(row.pct_ps_nocturno), pctPsDominical: Number(row.pct_ps_dominical),
     pctPsNoctDominical: Number(row.pct_ps_noct_dominical),
+    descontarDescanso: row.descontar_descanso === true, extrasPorExceso: row.extras_por_exceso === true,
+    smmlv: Number(row.smmlv ?? 1750905), auxilioTransporte: Number(row.auxilio_transporte ?? 249095),
+    pctSalud: Number(row.pct_salud ?? 4), pctPension: Number(row.pct_pension ?? 4),
   };
 }
 function liqConfigPayload(f) {
@@ -2913,7 +2918,10 @@ function liqConfigPayload(f) {
     pct_recargo_nocturno: Number(f.pctRecargoNocturno), pct_extra_diurna: Number(f.pctExtraDiurna),
     pct_extra_nocturna: Number(f.pctExtraNocturna), pct_recargo_dominical: Number(f.pctRecargoDominical),
     pct_ps_nocturno: Number(f.pctPsNocturno), pct_ps_dominical: Number(f.pctPsDominical),
-    pct_ps_noct_dominical: Number(f.pctPsNoctDominical), updated_at: new Date().toISOString(),
+    pct_ps_noct_dominical: Number(f.pctPsNoctDominical),
+    descontar_descanso: !!f.descontarDescanso, extras_por_exceso: !!f.extrasPorExceso,
+    smmlv: Number(f.smmlv), auxilio_transporte: Number(f.auxilioTransporte),
+    pct_salud: Number(f.pctSalud), pct_pension: Number(f.pctPension), updated_at: new Date().toISOString(),
   };
 }
 function useLiquidacionDatos() {
@@ -2943,7 +2951,7 @@ const fmtCOP = (n) => new Intl.NumberFormat("es-CO", { style: "currency", curren
 const fmtH = (n) => (Math.round((n || 0) * 100) / 100).toLocaleString("es-CO");
 
 // Divide un turno en tramos de 1 hora y clasifica cada uno (noche / domingo-festivo).
-// Las horas de descanso del turno noche se reparten proporcionalmente.
+// `horas` = horas de reloj; `efec` = horas efectivas (descontando el descanso del turno noche, repartido proporcionalmente).
 function segmentosDeTurno(t, cfg, festivoSet) {
   const bruto = t.end - t.start;
   const factor = bruto > 0 ? horasEfectivas(t) / bruto : 1;
@@ -2955,7 +2963,7 @@ function segmentosDeTurno(t, cfg, festivoSet) {
     const noche = cfg.nocheInicio > cfg.nocheFin ? (hd >= cfg.nocheInicio || hd < cfg.nocheFin) : (hd >= cfg.nocheInicio && hd < cfg.nocheFin);
     const fechaReal = toISO(addDays(new Date(`${t.date}T00:00:00`), Math.floor(medio / 24)));
     const dom = new Date(`${fechaReal}T00:00:00`).getDay() === 0 || festivoSet.has(fechaReal);
-    out.push({ noche, dom, horas: tramo * factor });
+    out.push({ noche, dom, horas: tramo, efec: tramo * factor });
   }
   return out;
 }
@@ -2975,17 +2983,19 @@ function calcularLiquidacion({ persona, rem, config, turnos, turnosExtra, festiv
   const umbral = modalidad === "laboral" ? (persona.horas > 0 ? persona.horas : cfg.jornadaSemanalMax) : Infinity;
   const acumSemana = {};
   const suyos = turnos.filter((t) => t.personalId === persona.id).sort((a, b) => a.date.localeCompare(b.date) || a.start - b.start);
+  const extrasOn = modalidad === "laboral" && cfg.extrasPorExceso;
   suyos.forEach((t) => {
     const semana = toISO(getMonday(new Date(`${t.date}T00:00:00`)));
     segmentosDeTurno(t, cfg, festivoSet).forEach((s) => {
       const antes = acumSemana[semana] || 0;
-      acumSemana[semana] = antes + s.horas;
+      acumSemana[semana] = antes + s.efec;
       if (t.date < desde || t.date > hasta) return;
-      const ordinaria = Math.max(0, Math.min(s.horas, umbral - antes));
-      const extra = s.horas - ordinaria;
+      const ordEfec = extrasOn ? Math.max(0, Math.min(s.efec, umbral - antes)) : s.efec;
+      const fracExtra = s.efec > 0 ? (s.efec - ordEfec) / s.efec : 0;
+      const hBase = cfg.descontarDescanso ? s.efec : s.horas;
       const k = claveClase(s.noche, s.dom);
-      horasOrd[k] += ordinaria;
-      horasExt[k] += extra;
+      horasOrd[k] += hBase * (1 - fracExtra);
+      horasExt[k] += hBase * fracExtra;
     });
   });
   // Turnos extra registrados manualmente en Novedades: todas sus horas son adicionales.
@@ -3018,13 +3028,12 @@ function calcularLiquidacion({ persona, rem, config, turnos, turnosExtra, festiv
   // Contrato laboral
   const salario = rem?.salarioBase || 0;
   const vh = salario / (cfg.divisorMensual || 210);
-  const ini = new Date(`${desde}T00:00:00`), fin = new Date(`${hasta}T00:00:00`);
-  const mesCompleto = ini.getDate() === 1 && ini.getMonth() === fin.getMonth() && ini.getFullYear() === fin.getFullYear()
-    && fin.getDate() === new Date(fin.getFullYear(), fin.getMonth() + 1, 0).getDate();
-  const dias = Math.round((fin - ini) / 86400000) + 1;
-  const salarioPeriodo = mesCompleto ? salario : salario * Math.min(dias, 30) / 30;
-  lineas.push({ concepto: mesCompleto ? "Salario base (mes)" : `Salario base (${dias} días, proporcional)`, horas: null, valor: salarioPeriodo, nota: `Valor hora ordinaria ${fmtCOP(vh)}` });
-  total += salarioPeriodo;
+  // El salario base SIEMPRE es el del mes completo (1.º al último día) del mes en que termina el corte;
+  // los recargos sí usan las fechas de corte elegidas.
+  const refFin = new Date(`${hasta}T00:00:00`);
+  const mesRef = `${MES_LABEL[refFin.getMonth()].toLowerCase()} ${refFin.getFullYear()}`;
+  lineas.push({ concepto: `Salario base (${mesRef}, mes completo)`, horas: null, valor: salario, nota: `Valor hora ordinaria ${fmtCOP(vh)}` });
+  total += salario;
   const recargos = [
     ["N", "Recargo nocturno", cfg.pctRecargoNocturno / 100],
     ["DF", "Recargo dominical / festivo", dom],
@@ -3045,10 +3054,22 @@ function calcularLiquidacion({ persona, rem, config, turnos, turnosExtra, festiv
   extras.forEach(([k, nombre, m]) => {
     const h = horasExt[k];
     const valor = h * vh * m;
+    if (h <= 0 && !extrasOn && horasExtraRegistradas <= 0) return; // no llenar la tabla de ceros
     total += valor;
     lineas.push({ concepto: nombre, horas: h, valor, nota: `${Math.round(m * 100)}% de la hora ordinaria` });
   });
-  return { modalidad, lineas, total, totalHoras, horasExtraRegistradas, configurado: salario > 0, subtotalBase: salarioPeriodo };
+  // Deducciones de ley (salud y pensión) sobre salario + recargos + extras.
+  const baseDeduc = total;
+  if (salario > 0 && salario <= 2 * cfg.smmlv && cfg.auxilioTransporte > 0) {
+    lineas.push({ concepto: "Auxilio de transporte", horas: null, valor: cfg.auxilioTransporte, nota: "Aplica por devengar hasta 2 salarios mínimos" });
+    total += cfg.auxilioTransporte;
+  }
+  [["Salud", cfg.pctSalud], ["Pensión", cfg.pctPension]].forEach(([nombre, pct]) => {
+    const valor = baseDeduc * pct / 100;
+    total -= valor;
+    lineas.push({ concepto: `${nombre} (${pct}%)`, horas: null, valor: -valor, nota: "Sobre salario + recargos y extras", deduccion: true });
+  });
+  return { modalidad, lineas, total, totalHoras, horasExtraRegistradas, configurado: salario > 0, subtotalBase: salario };
 }
 
 function LiquidacionPanel({ ctx, turnos, personas, filtroPersonal, setFiltroPersonal, desde, hasta, festivoSet, etiquetaPeriodo }) {
@@ -3124,7 +3145,7 @@ function LiquidacionPanel({ ctx, turnos, personas, filtroPersonal, setFiltroPers
               <div>
                 <p className="font-semibold text-[14px]">{sel.p.nombre}</p>
                 <p className="text-[12px]" style={{ color: T.muted }}>
-                  {r.modalidad === "prestacion" ? "Prestación de servicios" : "Contrato laboral"} · {fmtH(r.totalHoras)} h en el periodo
+                  {r.modalidad === "prestacion" ? "Prestación de servicios" : "Contrato laboral"} · {fmtH(r.totalHoras)} h de reloj en el periodo
                   {r.horasExtraRegistradas > 0 ? ` (incluye ${fmtH(r.horasExtraRegistradas)} h de turnos extra registrados)` : ""}
                 </p>
               </div>
@@ -3151,7 +3172,7 @@ function LiquidacionPanel({ ctx, turnos, personas, filtroPersonal, setFiltroPers
                       {l.nota && <span className="block text-[11px]" style={{ color: T.muted }}>{l.nota}</span>}
                     </td>
                     <td className="py-2 text-right tabular-nums">{l.horas == null ? "—" : fmtH(l.horas)}</td>
-                    <td className="py-2 text-right tabular-nums">{fmtCOP(l.valor)}</td>
+                    <td className="py-2 text-right tabular-nums" style={l.deduccion ? { color: T.danger } : undefined}>{l.valor < 0 ? `(${fmtCOP(-l.valor)})` : fmtCOP(l.valor)}</td>
                   </tr>
                 ))}
                 <tr className="border-t" style={{ borderColor: T.border }}>
@@ -3165,14 +3186,16 @@ function LiquidacionPanel({ ctx, turnos, personas, filtroPersonal, setFiltroPers
                   <td className="py-1.5 text-right"><input value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="0" inputMode="numeric" style={{ ...inputStyle, width: 130, padding: "6px 10px", textAlign: "right" }} /></td>
                 </tr>
                 <tr className="border-t-2" style={{ borderColor: T.border }}>
-                  <td className="py-2.5 font-semibold" colSpan={2}>{r.modalidad === "prestacion" ? "Total estimado a facturar" : "Total estimado a recibir"}</td>
+                  <td className="py-2.5 font-semibold" colSpan={2}>{r.modalidad === "prestacion" ? "Total estimado a facturar" : "Total neto estimado a recibir"}</td>
                   <td className="py-2.5 text-right tabular-nums font-semibold text-[15px]" style={{ color: T.primaryDark }}>{fmtCOP(totalFinal)}</td>
                 </tr>
               </tbody>
             </table>
             {r.modalidad === "laboral" && (
               <p className="text-[11.5px]" style={{ color: T.muted }}>
-                Las horas ordinarias ya están dentro del salario; aquí solo se suman recargos y horas extra. Se consideran extra las horas que superan las {fmtH(sel.p.horas > 0 ? sel.p.horas : config.jornadaSemanalMax)} h semanales de esta persona, más los turnos extra registrados en Novedades. Valor bruto, antes de aportes y deducciones de ley.
+                El salario es el del mes completo del corte (hasta el {new Date(`${hasta}T00:00:00`).toLocaleDateString("es-CO", { day: "numeric", month: "long" })}); los recargos usan las fechas de corte elegidas arriba. Las horas ordinarias ya van dentro del salario: aquí solo se suman recargos y extras.
+                {config.extrasPorExceso ? ` Se cuentan como extra las horas sobre ${fmtH(sel.p.horas > 0 ? sel.p.horas : config.jornadaSemanalMax)} h semanales y los turnos extra registrados en Novedades.` : " Solo se pagan como extra los turnos extra registrados en Novedades."}
+                {" "}Salud y pensión se calculan sobre salario + recargos. Estimación; no reemplaza la nómina oficial.
               </p>
             )}
           </div>
@@ -3242,6 +3265,26 @@ function LiquidacionConfigCard({ ctx }) {
               {num("divisorMensual", "Horas mensuales (divisor)", "h")}
             </div>
             <p className="text-[11.5px] mt-1.5" style={{ color: T.muted }}>Los festivos se toman de la lista de festivos de Configuración; los domingos cuentan siempre como dominical.</p>
+            <div className="flex flex-col gap-1.5 mt-3">
+              <label className="flex items-start gap-2 text-[13px]">
+                <input type="checkbox" className="mt-0.5" checked={!!form.descontarDescanso} onChange={(e) => set("descontarDescanso", e.target.checked)} />
+                <span>Descontar el descanso del turno noche al calcular recargos <span className="text-[11.5px]" style={{ color: T.muted }}>(apagado = se cuentan todas las horas de reloj del turno, como en la colilla actual)</span></span>
+              </label>
+              <label className="flex items-start gap-2 text-[13px]">
+                <input type="checkbox" className="mt-0.5" checked={!!form.extrasPorExceso} onChange={(e) => set("extrasPorExceso", e.target.checked)} />
+                <span>Pagar como hora extra lo que supere las horas semanales de cada persona <span className="text-[11.5px]" style={{ color: T.muted }}>(apagado = solo cuentan como extra los turnos extra registrados en Novedades)</span></span>
+              </label>
+            </div>
+          </div>
+          <div>
+            <p className="text-[12px] font-semibold uppercase tracking-wide mb-2" style={{ color: T.muted }}>Auxilio de transporte y deducciones (contrato laboral)</p>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              {num("smmlv", "Salario mínimo (SMMLV)", "$")}
+              {num("auxilioTransporte", "Auxilio de transporte", "$")}
+              {num("pctSalud", "Salud (trabajador)", "%")}
+              {num("pctPension", "Pensión (trabajador)", "%")}
+            </div>
+            <p className="text-[11.5px] mt-1.5" style={{ color: T.muted }}>El auxilio aplica a quien devenga hasta 2 salarios mínimos. Salud y pensión se descuentan sobre salario + recargos.</p>
           </div>
           <div>
             <p className="text-[12px] font-semibold uppercase tracking-wide mb-2" style={{ color: T.muted }}>Contrato laboral (% sobre la hora ordinaria)</p>
