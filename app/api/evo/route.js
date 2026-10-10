@@ -45,23 +45,32 @@ export async function POST(request) {
 
     // Verifica que quien pregunta sea un usuario real, aprobado y activo
     // (evita que cualquiera recién registrado use a Evo o su cuota gratuita).
-    const acceso = await verificarAcceso(request);
+    if (!servicioId || !/^[0-9a-f-]{36}$/i.test(servicioId)) return Response.json({ error: "Falta indicar el servicio." }, { status: 400 });
+    // Además, quien pregunta debe pertenecer al servicio: Evo solo responde con
+    // el contenido de SU servicio (y lo compartido por su institución).
+    const acceso = await verificarAcceso(request, { servicioId });
     if (!acceso.ok) return Response.json({ error: acceso.error }, { status: acceso.status });
 
     // Trae el contenido de Evoluciona con la llave de servicio (sin restricción de
     // RLS, porque ya confirmamos arriba que quien pregunta es un usuario real).
     const headers = { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` };
-    const bibUrl = servicioId
-      ? `${SUPABASE_URL}/rest/v1/biblioteca_actividades?select=*&servicio_id=eq.${servicioId}`
-      : `${SUPABASE_URL}/rest/v1/biblioteca_actividades?select=*`;
-    const temaUrl = servicioId
-      ? `${SUPABASE_URL}/rest/v1/temas_biblioteca?select=*&servicio_id=eq.${servicioId}`
-      : `${SUPABASE_URL}/rest/v1/temas_biblioteca?select=*`;
+    const bibUrl = `${SUPABASE_URL}/rest/v1/biblioteca_actividades?select=*&servicio_id=eq.${servicioId}`;
+    const temaUrl = `${SUPABASE_URL}/rest/v1/temas_biblioteca?select=*&servicio_id=eq.${servicioId}`;
+
+    // Formación: la de este servicio + la compartida con toda su institución.
+    const servRes = await fetch(`${SUPABASE_URL}/rest/v1/servicios?id=eq.${servicioId}&select=*`, { headers });
+    const servicio = (servRes.ok ? await servRes.json() : [])[0];
+    const formUrl = servicio?.institucion_id
+      ? `${SUPABASE_URL}/rest/v1/formacion_continua?select=*&or=(servicio_id.eq.${servicioId},and(servicio_id.is.null,institucion_id.eq.${servicio.institucion_id}))`
+      : `${SUPABASE_URL}/rest/v1/formacion_continua?select=*`;
+    if (servicio?.modulos && servicio.modulos.evo === false) {
+      return Response.json({ error: "Evo no está activado en este servicio." }, { status: 403 });
+    }
 
     const [bibRes, temaRes, formRes] = await Promise.all([
       fetch(bibUrl, { headers }),
       fetch(temaUrl, { headers }),
-      fetch(`${SUPABASE_URL}/rest/v1/formacion_continua?select=*`, { headers }),
+      fetch(formUrl, { headers }),
     ]);
     const biblioteca = bibRes.ok ? await bibRes.json() : [];
     const temas = temaRes.ok ? await temaRes.json() : [];

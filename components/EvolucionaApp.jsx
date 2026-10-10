@@ -130,42 +130,63 @@ function ThemeToggle({ theme, setTheme, compact }) {
 }
 
 function ServicioSelector({ ctx }) {
-  const { servicios, servicioActualId, cambiarServicio, servicioSelectorAbierto, setServicioSelectorAbierto, isMaestro, setServicioModal } = ctx;
+  const { servicios, instituciones, servicioActualId, cambiarServicio, servicioSelectorAbierto, setServicioSelectorAbierto, esSuperadmin, setView } = ctx;
   const actual = servicios.find((s) => s.id === servicioActualId);
-  if (servicios.length === 0) return null;
+  const disponibles = servicios.filter((s) => s.activo);
+  if (disponibles.length === 0) return null;
+  const variasInstituciones = instituciones.length > 1;
+  const institucionDe = (sv) => instituciones.find((i) => i.id === sv.institucionId);
+  const soloUno = disponibles.length === 1 && !esSuperadmin;
+  // Agrupa por institución (lo usa sobre todo el superadmin).
+  const grupos = [];
+  disponibles.forEach((sv) => {
+    const inst = institucionDe(sv);
+    const key = inst?.id || "sin";
+    let g = grupos.find((x) => x.key === key);
+    if (!g) { g = { key, nombre: inst?.nombre || "", items: [] }; grupos.push(g); }
+    g.items.push(sv);
+  });
+  const etiqueta = actual ? `${variasInstituciones && institucionDe(actual) ? `${institucionDe(actual).nombre} · ` : ""}${actual.nombre}` : "Servicio";
   return (
     <div className="relative shrink-0">
       <button
-        onClick={() => setServicioSelectorAbierto((v) => !v)}
+        onClick={() => !soloUno && setServicioSelectorAbierto((v) => !v)}
         className="ev-btn flex items-center gap-1.5 px-2.5 py-1.5 text-[12.5px] font-medium"
-        style={{ border: `1px solid ${T.border}`, color: T.ink }}
+        style={{ border: `1px solid ${T.border}`, color: T.ink, cursor: soloUno ? "default" : "pointer" }}
       >
         <Building2 size={13} style={{ color: T.primary }} />
-        <span className="max-w-[140px] truncate">{actual?.nombre || "Servicio"}</span>
-        <ChevronDown size={13} style={{ color: T.muted }} />
+        <span className="max-w-[180px] truncate">{etiqueta}</span>
+        {!soloUno && <ChevronDown size={13} style={{ color: T.muted }} />}
       </button>
       {servicioSelectorAbierto && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setServicioSelectorAbierto(false)} />
-          <div className="absolute left-0 top-full mt-1.5 z-50 w-64 ev-card p-1.5" style={{ background: T.surface }}>
-            {servicios.map((s) => (
-              <button
-                key={s.id}
-                onClick={() => cambiarServicio(s.id)}
-                className="w-full text-left px-3 py-2 rounded-lg text-[13px] flex items-center justify-between"
-                style={{ background: s.id === servicioActualId ? T.primarySoft : "transparent", color: s.id === servicioActualId ? T.primaryDark : T.ink }}
-              >
-                {s.nombre}
-                {s.id === servicioActualId && <CheckCircle2 size={14} />}
-              </button>
+          <div className="absolute left-0 top-full mt-1.5 z-50 w-72 ev-card p-1.5 max-h-[70vh] overflow-y-auto ev-scroll" style={{ background: T.surface }}>
+            {grupos.map((g) => (
+              <div key={g.key}>
+                {(variasInstituciones || esSuperadmin) && g.nombre && (
+                  <p className="px-3 pt-2 pb-1 text-[10.5px] font-semibold uppercase tracking-wider" style={{ color: T.muted }}>{g.nombre}</p>
+                )}
+                {g.items.map((sv) => (
+                  <button
+                    key={sv.id}
+                    onClick={() => cambiarServicio(sv.id)}
+                    className="w-full text-left px-3 py-2 rounded-lg text-[13px] flex items-center justify-between"
+                    style={{ background: sv.id === servicioActualId ? T.primarySoft : "transparent", color: sv.id === servicioActualId ? T.primaryDark : T.ink }}
+                  >
+                    {sv.nombre}
+                    {sv.id === servicioActualId && <CheckCircle2 size={14} />}
+                  </button>
+                ))}
+              </div>
             ))}
-            {isMaestro && (
+            {esSuperadmin && (
               <button
-                onClick={() => { setServicioSelectorAbierto(false); setServicioModal(true); }}
+                onClick={() => { setServicioSelectorAbierto(false); setView("panel"); }}
                 className="w-full text-left px-3 py-2 rounded-lg text-[13px] font-medium mt-1 border-t pt-2.5"
                 style={{ color: T.primary, borderColor: T.border }}
               >
-                <Plus size={13} className="inline -mt-0.5 mr-1" /> Nuevo servicio
+                <Shield size={13} className="inline -mt-0.5 mr-1" /> Administrar en el Panel de control
               </button>
             )}
           </div>
@@ -349,7 +370,8 @@ function leerSesionLocal() {
 }
 let onSesionExpirada = () => {}; // la app raíz la reemplaza para cerrar sesión si el refresh también falla
 let refrescoEnCurso = null; // evita refrescar varias veces en paralelo
-let SERVICIO_ACTUAL = null; // id del servicio seleccionado; lo usan los inserts para etiquetar los datos nuevos
+let SERVICIO_ACTUAL = null;
+let INSTITUCION_ACTUAL = null; // institución del servicio seleccionado (avisos, formación y festivos compartidos) // id del servicio seleccionado; lo usan los inserts para etiquetar los datos nuevos
 
 async function refrescarSesion() {
   if (!REFRESH_TOKEN) throw new Error("Sin token de refresco");
@@ -480,7 +502,7 @@ async function subirArchivoFormacion(file) {
   return { path, url: `${SUPABASE_URL}/storage/v1/object/public/${FORMACION_BUCKET}/${path}` };
 }
 function mapFormacion(row) {
-  return { id: row.id, titulo: row.titulo, descripcion: row.descripcion || "", tipo: row.tipo, archivoPath: row.archivo_path, archivoUrl: row.archivo_url, autor: row.autor || "", createdAt: row.created_at, contenidoTexto: row.contenido_texto || "" };
+  return { id: row.id, titulo: row.titulo, descripcion: row.descripcion || "", tipo: row.tipo, archivoPath: row.archivo_path, archivoUrl: row.archivo_url, autor: row.autor || "", createdAt: row.created_at, contenidoTexto: row.contenido_texto || "", servicioId: row.servicio_id || null, institucionId: row.institucion_id || null };
 }
 async function fetchFormacion() {
   const rows = await sb("formacion_continua?select=*&order=created_at.desc");
@@ -489,7 +511,7 @@ async function fetchFormacion() {
 async function insertFormacionRemote(form) {
   const [row] = await sb("formacion_continua", {
     method: "POST",
-    body: JSON.stringify({ titulo: form.titulo, descripcion: form.descripcion || null, tipo: form.tipo, archivo_path: form.archivoPath, archivo_url: form.archivoUrl, autor: form.autor || null, contenido_texto: form.contenidoTexto || null }),
+    body: JSON.stringify({ titulo: form.titulo, descripcion: form.descripcion || null, tipo: form.tipo, archivo_path: form.archivoPath, archivo_url: form.archivoUrl, autor: form.autor || null, contenido_texto: form.contenidoTexto || null, ...(INSTITUCION_ACTUAL ? camposAlcance(form.alcance) : {}) }),
   });
   return mapFormacion(row);
 }
@@ -554,11 +576,14 @@ function mapUsuario(row) {
   return {
     id: row.id, nombre: row.nombre, correo: row.correo, rol: row.rol, activo: row.activo !== false,
     // Si la columna aún no existe (SQL de la etapa 1 sin correr), se trata como aprobado.
-    aprobado: row.aprobado !== false, createdAt: row.created_at,
+    aprobado: row.aprobado !== false, createdAt: row.created_at, esSuperadmin: row.es_superadmin === true,
   };
 }
 function sesionDesdeUsuario(propio, emailRespaldo) {
-  return { id: propio?.id, email: propio?.correo || emailRespaldo, rol: propio?.rol || "lector", aprobado: propio ? propio.aprobado !== false : false };
+  return {
+    id: propio?.id, email: propio?.correo || emailRespaldo, rol: propio?.rol || "lector",
+    aprobado: propio ? propio.aprobado !== false : false, esSuperadmin: !!propio?.esSuperadmin, nombre: propio?.nombre || "",
+  };
 }
 
 /* ---------- Invitaciones (etapa 1: acceso controlado) ---------- */
@@ -594,7 +619,7 @@ function generarCodigoInvitacion() {
 function mapInvitacion(row) {
   return {
     id: row.id, codigo: row.codigo, servicioId: row.servicio_id || null, nota: row.nota || "",
-    usosMax: row.usos_max, usos: row.usos, expiraEn: row.expira_en, activa: row.activa, createdAt: row.created_at,
+    usosMax: row.usos_max, usos: row.usos, expiraEn: row.expira_en, activa: row.activa, createdAt: row.created_at, rol: row.rol || "lector",
   };
 }
 function estadoInvitacion(inv) {
@@ -604,38 +629,86 @@ function estadoInvitacion(inv) {
   return { texto: "Vigente", tono: "ok" };
 }
 
+// Funciones que se pueden activar o apagar en cada servicio (etapa 2).
+// "Dashboard" y "Configuración" siempre están.
+const MODULOS = [
+  { key: "actividades", label: "Actividades", desc: "Calendario de actividades terapéuticas" },
+  { key: "turnos", label: "Turnos", desc: "Programación y generador de turnos" },
+  { key: "novedades", label: "Novedades", desc: "Incapacidades, permisos y turnos extra" },
+  { key: "biblioteca", label: "Biblioteca", desc: "Índice de actividades por tema" },
+  { key: "formacion", label: "Formación Continua", desc: "Infografías, videos, PDFs y tests" },
+  { key: "evo", label: "Evo", desc: "Asistente de IA" },
+  { key: "personal", label: "Personal", desc: "Equipo del servicio y Telegram" },
+  { key: "reportes", label: "Reportes", desc: "Exportar a Excel y PDF" },
+];
+const MODULOS_TODOS = Object.fromEntries(MODULOS.map((m) => [m.key, true]));
+function normalizarModulos(m) {
+  return { ...MODULOS_TODOS, ...(m && typeof m === "object" ? m : {}) };
+}
+
 function mapServicio(row) {
-  return { id: row.id, nombre: row.nombre };
+  return {
+    id: row.id, nombre: row.nombre, institucionId: row.institucion_id || null,
+    activo: row.activo !== false, modulos: normalizarModulos(row.modulos), createdAt: row.created_at,
+  };
 }
 async function fetchServicios() {
   const rows = await sb("servicios?select=*&order=created_at");
   return rows.map(mapServicio);
 }
-async function insertServicioRemote(nombre) {
-  const [row] = await sb("servicios", { method: "POST", body: JSON.stringify({ nombre }) });
+async function insertServicioRemote(nombre, institucionId, modulos) {
+  const body = { nombre };
+  if (institucionId) body.institucion_id = institucionId;
+  if (modulos) body.modulos = modulos;
+  const [row] = await sb("servicios", { method: "POST", body: JSON.stringify(body) });
   return mapServicio(row);
+}
+async function actualizarServicioRemote(id, cambios) {
+  const [row] = await sb(`servicios?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(cambios) });
+  return mapServicio(row);
+}
+function mapInstitucion(row) {
+  return { id: row.id, nombre: row.nombre, activa: row.activa !== false, createdAt: row.created_at };
+}
+async function fetchInstituciones() {
+  const rows = await sb("instituciones?select=*&order=created_at");
+  return rows.map(mapInstitucion);
+}
+function mapMiembro(row) {
+  return { id: row.id, usuarioId: row.usuario_id, servicioId: row.servicio_id, rol: row.rol };
+}
+// Devuelve null si la tabla "miembros" aún no existe (SQL de la etapa 2 sin correr).
+async function fetchMisMiembros(uid) {
+  try {
+    const rows = await sb(`miembros?usuario_id=eq.${uid}&select=*`);
+    return rows.map(mapMiembro);
+  } catch (_) {
+    return null;
+  }
 }
 async function renombrarServicioRemote(id, nombre) {
   const [row] = await sb(`servicios?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ nombre }) });
   return mapServicio(row);
 }
 
-async function fetchAllRemote(servicioId) {
+async function fetchAllRemote(servicioId, institucionId) {
   const s = `servicio_id=eq.${servicioId}`;
+  const alcance = filtroAlcance(servicioId, institucionId);
+  const inst = institucionId ? `institucion_id=eq.${institucionId}&` : "";
   const [personalRows, actRows, turnRows, bibRows, reglasRow, festivoRows, novedadRows, reglaPersonalRows, plantillaRows, plantillaItemRows, avisoRows, temaRows, formacionRows, vistoRows, preguntaRows, resultadoRows, turnoExtraRows] = await Promise.all([
     sb(`personal?${s}&select=*&order=nombre`),
     sb(`actividades?${s}&select=*`),
     sb(`turnos?${s}&select=*`),
     sb(`biblioteca_actividades?${s}&select=*&order=nombre`),
     sb(`reglas_turnos?${s}&select=*&limit=1`),
-    sb("festivos?select=*&order=fecha"),
+    sb(`festivos?${inst}select=*&order=fecha`),
     sb(`novedades?${s}&select=*&order=fecha_inicio.desc`),
     sb(`reglas_personal?${s}&select=*`),
     sb(`plantillas_semanales?${s}&select=*&order=nombre`),
     sb("plantilla_actividades?select=*"),
-    sb("avisos_tablero?select=*&order=created_at.desc"),
+    sb(`avisos_tablero?${alcance}select=*&order=created_at.desc`),
     sb(`temas_biblioteca?${s}&select=*&order=nombre`),
-    sb("formacion_continua?select=*&order=created_at.desc"),
+    sb(`formacion_continua?${alcance}select=*&order=created_at.desc`),
     sb("formacion_vistos?select=*"),
     sb("formacion_preguntas?select=*&order=orden"),
     sb("formacion_resultados?select=*"),
@@ -827,7 +900,7 @@ async function fetchFestivos() {
   return rows.map(mapFestivo);
 }
 async function insertFestivoRemote(form) {
-  const [row] = await sb("festivos", { method: "POST", body: JSON.stringify({ fecha: form.fecha, nombre: form.nombre }) });
+  const [row] = await sb("festivos", { method: "POST", body: JSON.stringify({ fecha: form.fecha, nombre: form.nombre, ...(INSTITUCION_ACTUAL ? { institucion_id: INSTITUCION_ACTUAL } : {}) }) });
   return mapFestivo(row);
 }
 async function deleteFestivoRemote(id) {
@@ -932,7 +1005,21 @@ async function deletePlantillaItemRemote(id) {
 }
 
 function mapAviso(row) {
-  return { id: row.id, titulo: row.titulo, mensaje: row.mensaje, nivel: row.nivel, autor: row.autor || "", fechaExpira: row.fecha_expira, createdAt: row.created_at };
+  return {
+    id: row.id, titulo: row.titulo, mensaje: row.mensaje, nivel: row.nivel, autor: row.autor || "", fechaExpira: row.fecha_expira, createdAt: row.created_at,
+    servicioId: row.servicio_id || null, institucionId: row.institucion_id || null,
+  };
+}
+// Alcance de avisos y Formación: "servicio" (solo el servicio actual) o
+// "institucion" (todos los servicios de la institución).
+function camposAlcance(alcance) {
+  if (alcance === "institucion" && INSTITUCION_ACTUAL) return { servicio_id: null, institucion_id: INSTITUCION_ACTUAL };
+  return { servicio_id: SERVICIO_ACTUAL, institucion_id: INSTITUCION_ACTUAL || null };
+}
+// Filtro para traer lo del servicio actual + lo compartido con su institución.
+function filtroAlcance(servicioId, institucionId) {
+  if (!institucionId) return "";
+  return `or=(servicio_id.eq.${servicioId},and(servicio_id.is.null,institucion_id.eq.${institucionId}))&`;
 }
 async function fetchAvisos() {
   const rows = await sb("avisos_tablero?select=*&order=created_at.desc");
@@ -941,7 +1028,7 @@ async function fetchAvisos() {
 async function insertAvisoRemote(form) {
   const [row] = await sb("avisos_tablero", {
     method: "POST",
-    body: JSON.stringify({ titulo: form.titulo, mensaje: form.mensaje, nivel: form.nivel, autor: form.autor || null, fecha_expira: form.fechaExpira || null }),
+    body: JSON.stringify({ titulo: form.titulo, mensaje: form.mensaje, nivel: form.nivel, autor: form.autor || null, fecha_expira: form.fechaExpira || null, ...(INSTITUCION_ACTUAL ? camposAlcance(form.alcance) : {}) }),
   });
   return mapAviso(row);
 }
@@ -974,17 +1061,25 @@ let _id = 1;
 const nid = () => `tmp${_id++}`; // solo para el formulario mientras se guarda en Supabase
 
 const NAV = [
+  { key: "panel", label: "Panel de control", icon: Shield, soloSuperadmin: true },
   { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { key: "actividades", label: "Actividades", icon: CalendarDays },
-  { key: "turnos", label: "Turnos", icon: Clock },
-  { key: "novedades", label: "Novedades", icon: UserX },
-  { key: "biblioteca", label: "Biblioteca", icon: BookOpen },
-  { key: "formacion", label: "Formación Continua", icon: GraduationCap },
-  { key: "evo", label: "Evo", icon: Bot },
-  { key: "personal", label: "Personal", icon: Users, soloMaestro: true },
-  { key: "reportes", label: "Reportes", icon: FileBarChart, soloMaestro: true },
+  { key: "actividades", label: "Actividades", icon: CalendarDays, modulo: "actividades" },
+  { key: "turnos", label: "Turnos", icon: Clock, modulo: "turnos" },
+  { key: "novedades", label: "Novedades", icon: UserX, modulo: "novedades" },
+  { key: "biblioteca", label: "Biblioteca", icon: BookOpen, modulo: "biblioteca" },
+  { key: "formacion", label: "Formación Continua", icon: GraduationCap, modulo: "formacion" },
+  { key: "evo", label: "Evo", icon: Bot, modulo: "evo" },
+  { key: "personal", label: "Personal", icon: Users, soloMaestro: true, modulo: "personal" },
+  { key: "reportes", label: "Reportes", icon: FileBarChart, soloMaestro: true, modulo: "reportes" },
   { key: "configuracion", label: "Configuración", icon: Settings, soloMaestro: true },
 ];
+const SERVICIO_LOCAL_KEY = "evoluciona_servicio";
+function navVisible(n, { isMaestro, esSuperadmin, modulos }) {
+  if (n.soloSuperadmin) return esSuperadmin;
+  if (n.soloMaestro && !isMaestro) return false;
+  if (n.modulo && modulos && modulos[n.modulo] === false) return false;
+  return true;
+}
 const TURNO_TYPES = ["turno_dia", "turno_noche"];
 const ACTIVIDAD_TYPES = Object.keys(ACTIVITY_TYPES).filter((k) => !TURNO_TYPES.includes(k));
 // Valores por defecto si aún no cargaron las reglas desde Supabase.
@@ -1094,10 +1189,15 @@ export default function EvolucionaApp() {
     })();
   }, []);
   const [servicios, setServicios] = useState([]);
+  const [instituciones, setInstituciones] = useState([]);
+  const [misMiembros, setMisMiembros] = useState(null); // null = tabla "miembros" aún no existe
   const [servicioActualId, setServicioActualId] = useState(null);
   const [servicioModal, setServicioModal] = useState(false);
   const [servicioSelectorAbierto, setServicioSelectorAbierto] = useState(false);
-  React.useEffect(() => { SERVICIO_ACTUAL = servicioActualId; }, [servicioActualId]);
+  React.useEffect(() => {
+    SERVICIO_ACTUAL = servicioActualId;
+    INSTITUCION_ACTUAL = servicios.find((s) => s.id === servicioActualId)?.institucionId || null;
+  }, [servicioActualId, servicios]);
   const [recoveryToken, setRecoveryToken] = useState(undefined); // undefined = aún sin revisar; null = no hay; string = token de recuperación
   React.useEffect(() => {
     try {
@@ -1113,6 +1213,11 @@ export default function EvolucionaApp() {
     }
   }, []);
   const [view, setView] = useState("dashboard");
+  const panelInicialMostrado = React.useRef(false);
+  React.useEffect(() => {
+    if (session?.esSuperadmin && !panelInicialMostrado.current) { panelInicialMostrado.current = true; setView("panel"); }
+    if (!session) panelInicialMostrado.current = false;
+  }, [session]);
   const [events, setEvents] = useState([]);
   const [personal, setPersonal] = useState([]);
   const [biblioteca, setBiblioteca] = useState([]);
@@ -1156,7 +1261,13 @@ export default function EvolucionaApp() {
   const [saving, setSaving] = useState(false);
   const [toast, showToast] = useToast();
 
-  const isMaestro = session?.rol === "maestro";
+  const esSuperadmin = !!session?.esSuperadmin;
+  const servicioActual = servicios.find((s) => s.id === servicioActualId) || null;
+  const institucionActual = instituciones.find((i) => i.id === servicioActual?.institucionId) || null;
+  const modulos = servicioActual?.modulos || MODULOS_TODOS;
+  // Maestro se es POR SERVICIO. Si la tabla de miembros aún no existe, se usa el rol de antes.
+  const rolEnServicio = misMiembros ? misMiembros.find((m) => m.servicioId === servicioActualId)?.rol : null;
+  const isMaestro = esSuperadmin || (misMiembros ? rolEnServicio === "maestro" : session?.rol === "maestro");
 
   React.useEffect(() => {
     PERSONAL_STATE = personal;
@@ -1166,14 +1277,26 @@ export default function EvolucionaApp() {
     setLoading(true);
     setLoadError(null);
     try {
-      const listaServicios = await fetchServicios();
+      const [listaServicios, listaInstituciones, miembrosPropios] = await Promise.all([
+        fetchServicios(),
+        fetchInstituciones().catch(() => []),
+        session?.id ? fetchMisMiembros(session.id) : Promise.resolve(null),
+      ]);
       setServicios(listaServicios);
-      const preferido = forzarServicioId !== undefined ? forzarServicioId : servicioActualId;
-      const idAUsar = (preferido && listaServicios.some((s) => s.id === preferido))
+      setInstituciones(listaInstituciones);
+      setMisMiembros(miembrosPropios);
+      // Solo se entra a servicios activos (el superadmin los reactiva desde el Panel).
+      const disponibles = listaServicios.filter((s) => s.activo);
+      let guardado = null;
+      try { guardado = window.localStorage.getItem(SERVICIO_LOCAL_KEY); } catch (_) {}
+      const preferido = forzarServicioId !== undefined ? forzarServicioId : (servicioActualId || guardado);
+      const idAUsar = (preferido && disponibles.some((s) => s.id === preferido))
         ? preferido
-        : listaServicios[0]?.id || null;
+        : disponibles[0]?.id || null;
       setServicioActualId(idAUsar);
       SERVICIO_ACTUAL = idAUsar;
+      INSTITUCION_ACTUAL = listaServicios.find((s) => s.id === idAUsar)?.institucionId || null;
+      try { if (idAUsar) window.localStorage.setItem(SERVICIO_LOCAL_KEY, idAUsar); } catch (_) {}
 
       if (!idAUsar) {
         // No hay ningún servicio todavía (no debería pasar si corriste la migración,
@@ -1185,7 +1308,7 @@ export default function EvolucionaApp() {
         return;
       }
 
-      const data = await fetchAllRemote(idAUsar);
+      const data = await fetchAllRemote(idAUsar, INSTITUCION_ACTUAL);
       setPersonal(data.personal);
       setEvents(data.events);
       setBiblioteca(data.biblioteca);
@@ -1216,20 +1339,25 @@ export default function EvolucionaApp() {
     setServicioSelectorAbierto(false);
     await loadAll(id);
   }
-  async function crearServicio(nombre) {
+  async function crearServicio(nombre, institucionId, modulosElegidos) {
     setSaving(true);
     try {
-      const nuevo = await insertServicioRemote(nombre);
+      const nuevo = await insertServicioRemote(nombre, institucionId || INSTITUCION_ACTUAL, modulosElegidos);
       await insertReglasDefaultRemote(nuevo.id);
       setServicios((prev) => [...prev, nuevo]);
       setServicioModal(false);
       showToast(`Servicio "${nombre}" creado`);
-      await cambiarServicio(nuevo.id);
+      return nuevo;
     } catch (err) {
       showToast(`No se pudo crear: ${err.message}`, "warn");
+      return null;
     } finally {
       setSaving(false);
     }
+  }
+  async function entrarAServicio(id, vista = "dashboard") {
+    setView(vista);
+    if (id !== servicioActualId) await loadAll(id);
   }
   async function renombrarServicio(id, nombre) {
     try {
@@ -1672,8 +1800,14 @@ export default function EvolucionaApp() {
       showToast(`No se pudo actualizar: ${err.message}`, "warn");
     }
   }
-  async function aprobarUsuario(id) {
+  async function aprobarUsuario(id, servicioId, rol = "lector") {
     try {
+      if (servicioId && misMiembros) {
+        await sb("miembros?on_conflict=usuario_id,servicio_id", {
+          method: "POST", prefer: "resolution=merge-duplicates,return=minimal",
+          body: JSON.stringify({ usuario_id: id, servicio_id: servicioId, rol }),
+        });
+      }
       const [row] = await sb(`usuarios?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ aprobado: true, activo: true }) });
       const actualizado = mapUsuario(row);
       if (!actualizado.aprobado) throw new Error("la base de datos no permitió el cambio");
@@ -1829,6 +1963,8 @@ export default function EvolucionaApp() {
     testModal, setTestModal, gestionarTestModal, setGestionarTestModal, participacionModal, setParticipacionModal,
     reglaPersonalModal, setReglaPersonalModal,
     reemplazarTurno,
+    esSuperadmin, servicioActual, institucionActual, instituciones, setInstituciones, setServicios, modulos,
+    misMiembros, entrarAServicio, loadAll,
   };
 
   if (loading) {
@@ -1855,6 +1991,10 @@ export default function EvolucionaApp() {
         </div>
       </div>
     );
+  }
+
+  if (!servicioActualId && !esSuperadmin) {
+    return <SinServicioScreen session={session} theme={theme} setTheme={setTheme} onReintentar={() => loadAll()} onLogout={handleLogout} />;
   }
 
   return (
@@ -1890,7 +2030,7 @@ export default function EvolucionaApp() {
             </p>
           </div>
           <nav className="px-3 flex flex-col gap-1">
-            {NAV.filter((n) => !n.soloMaestro || isMaestro).map((n) => {
+            {NAV.filter((n) => navVisible(n, { isMaestro, esSuperadmin, modulos })).map((n) => {
               const Icon = n.icon;
               const active = view === n.key;
               return (
@@ -1934,7 +2074,7 @@ export default function EvolucionaApp() {
             <button className="lg:hidden ev-btn p-2 rounded-lg" style={{ border: `1px solid ${T.border}` }} onClick={() => setSidebarOpen(true)}>
               <CalendarDays size={16} />
             </button>
-            <h1 className="ev-display text-[20px] font-semibold capitalize truncate">{view}</h1>
+            <h1 className="ev-display text-[20px] font-semibold truncate">{NAV.find((n) => n.key === view)?.label || "Dashboard"}</h1>
             <ServicioSelector ctx={ctx} />
           </div>
           <div className="flex items-center gap-3 shrink-0">
@@ -1942,7 +2082,7 @@ export default function EvolucionaApp() {
               className="hidden sm:inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold"
               style={{ background: isMaestro ? T.primarySoft : T.accentSoft, color: isMaestro ? T.primaryDark : T.accentInk }}
             >
-              {isMaestro ? <Shield size={11} /> : <Lock size={11} />} {isMaestro ? "Maestro" : "Lector"}
+              {isMaestro ? <Shield size={11} /> : <Lock size={11} />} {esSuperadmin ? "Superadmin" : isMaestro ? "Maestro" : "Lector"}
             </span>
             <div className="hidden sm:flex items-center gap-2 pl-3 pr-1 py-1 rounded-full" style={{ border: `1px solid ${T.border}` }}>
               <div className="w-7 h-7 rounded-full flex items-center justify-center text-white text-[11px] font-semibold" style={{ background: T.primary }}>
@@ -1958,15 +2098,16 @@ export default function EvolucionaApp() {
         </header>
 
         <main className="flex-1 overflow-y-auto ev-scroll p-5 lg:p-8">
-          {(view === "dashboard" || (!isMaestro && NAV.some((n) => n.key === view && n.soloMaestro))) && <Dashboard ctx={ctx} />}
-          {view === "actividades" && <ActividadesCalendario ctx={ctx} />}
-          {view === "turnos" && <TurnosCalendario ctx={ctx} />}
-          {view === "novedades" && <Novedades ctx={ctx} />}
-          {view === "biblioteca" && <Biblioteca ctx={ctx} />}
-          {view === "formacion" && <FormacionContinua ctx={ctx} />}
-          {view === "evo" && <EvoChat ctx={ctx} />}
-          {view === "personal" && isMaestro && <Personal ctx={ctx} />}
-          {view === "reportes" && isMaestro && <Reportes ctx={ctx} />}
+          {view === "panel" && esSuperadmin && <PanelControl ctx={ctx} />}
+          {(view === "dashboard" || NAV.some((n) => n.key === view && !navVisible(n, { isMaestro, esSuperadmin, modulos }))) && <Dashboard ctx={ctx} />}
+          {view === "actividades" && modulos.actividades && <ActividadesCalendario ctx={ctx} />}
+          {view === "turnos" && modulos.turnos && <TurnosCalendario ctx={ctx} />}
+          {view === "novedades" && modulos.novedades && <Novedades ctx={ctx} />}
+          {view === "biblioteca" && modulos.biblioteca && <Biblioteca ctx={ctx} />}
+          {view === "formacion" && modulos.formacion && <FormacionContinua ctx={ctx} />}
+          {view === "evo" && modulos.evo && <EvoChat ctx={ctx} />}
+          {view === "personal" && isMaestro && modulos.personal && <Personal ctx={ctx} />}
+          {view === "reportes" && isMaestro && modulos.reportes && <Reportes ctx={ctx} />}
           {view === "configuracion" && isMaestro && <Configuracion ctx={ctx} />}
         </main>
       </div>
@@ -2107,6 +2248,14 @@ function LoginScreen({ onLogin, onVolver, theme, setTheme, codigoInicial }) {
         setNotice("Si ese correo está registrado, te llegará un enlace para crear una nueva contraseña. Revisa también spam.");
       } else if (mode === "signup") {
         const res = await authSignUp(form.correo, form.password);
+        // Supabase responde "ok" aunque el correo ya exista (para no revelar qué
+        // correos están registrados), pero sin identidades: así se detecta.
+        const usuarioCreado = res.user || res;
+        if (!res.access_token && Array.isArray(usuarioCreado?.identities) && usuarioCreado.identities.length === 0) {
+          setError("Ese correo ya tiene una cuenta en Evoluciona. Inicia sesión, o usa \"¿Olvidaste tu contraseña?\" si no la recuerdas.");
+          setMode("signin");
+          return;
+        }
         if (res.access_token) {
           ACCESS_TOKEN = res.access_token;
           REFRESH_TOKEN = res.refresh_token;
@@ -2433,6 +2582,29 @@ function PendienteScreen({ session, theme, setTheme, onAprobado, onLogout }) {
   );
 }
 
+function SinServicioScreen({ session, theme, setTheme, onReintentar, onLogout }) {
+  return (
+    <div data-theme={theme} style={{ background: T.base, color: T.ink, fontFamily: "'Inter', sans-serif" }} className="ev-root relative w-full min-h-[720px] flex items-center justify-center p-6">
+      <style>{THEME_CSS}</style>
+      <style>{APP_BASE_CSS}</style>
+      <div className="absolute top-5 right-5"><ThemeToggle theme={theme} setTheme={setTheme} /></div>
+      <div className="ev-card w-full max-w-sm p-6" style={{ background: T.surface }}>
+        <div className="w-11 h-11 rounded-xl flex items-center justify-center mb-3" style={{ background: T.primarySoft }}>
+          <Building2 size={20} style={{ color: T.primary }} />
+        </div>
+        <h2 className="ev-display text-[18px] font-bold mb-1.5">Aún no tienes un servicio asignado</h2>
+        <p className="text-[13px] leading-relaxed" style={{ color: T.muted }}>
+          Tu cuenta <strong style={{ color: T.ink }}>{session.email}</strong> está aprobada, pero todavía no pertenece a ningún servicio. Pídele a un Maestro de tu servicio que te agregue, o usa un código de invitación.
+        </p>
+        <div className="flex gap-2 mt-5">
+          <button onClick={onReintentar} className="ev-btn flex-1 justify-center px-3 py-2 text-[12.5px] text-white" style={{ background: T.primary }}>Volver a revisar</button>
+          <button onClick={onLogout} className="ev-btn flex-1 justify-center px-3 py-2 text-[12.5px]" style={{ border: `1px solid ${T.border}`, color: T.muted }}>Cerrar sesión</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ============================== TOAST UI ============================== */
 function Toast({ toast }) {
   const bg = toast.tone === "warn" ? T.dangerSoft : T.primarySoft;
@@ -2544,6 +2716,7 @@ function Dashboard({ ctx }) {
                   )}
                 </div>
                 <p className="text-[13px] leading-snug" style={{ color: T.ink }}>{a.mensaje}</p>
+                {!a.servicioId && a.institucionId && <div><EtiquetaInstitucion item={a} ctx={ctx} /></div>}
                 <p className="text-[10.5px] mt-0.5" style={{ color: T.muted }}>
                   {a.autor ? `${a.autor} · ` : ""}{new Date(a.createdAt).toLocaleDateString("es-CO", { day: "numeric", month: "short" })}
                 </p>
@@ -2599,6 +2772,7 @@ function Dashboard({ ctx }) {
         </div>
       )}
 
+      {ctx.modulos?.formacion !== false && (
       <div className="ev-card p-5">
         <div className="flex items-center justify-between mb-1">
           <h3 className="ev-display font-semibold text-[15px] flex items-center gap-2">
@@ -2632,6 +2806,7 @@ function Dashboard({ ctx }) {
           )}
         </div>
       </div>
+      )}
     </div>
   );
 }
@@ -4614,16 +4789,13 @@ function Reportes({ ctx }) {
 
 /* ============================== CONFIGURACIÓN ============================== */
 function Configuracion({ ctx }) {
-  const { reglas, saveReglas, isMaestro, saving, festivos, festivoModal, setFestivoModal, addFestivo, deleteFestivo } = ctx;
+  const { reglas, saveReglas, isMaestro, saving, festivos, festivoModal, setFestivoModal, addFestivo, deleteFestivo, esSuperadmin, servicioActual, modulos } = ctx;
   const [form, setForm] = useState(null);
+  const conTurnos = modulos?.turnos !== false;
 
   React.useEffect(() => {
     if (reglas && !form) setForm({ ...reglas, cargosTexto: reglas.cargosTurno.join(", ") });
   }, [reglas]);
-
-  if (!reglas || !form) {
-    return <p className="text-[13px]" style={{ color: T.muted }}>No hay reglas configuradas todavía. Corre la migración de reglas de turnos en Supabase.</p>;
-  }
 
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
   const numField = (key, label, hint) => (
@@ -4641,6 +4813,24 @@ function Configuracion({ ctx }) {
         </div>
       )}
 
+      {/* Acceso: quién entra a este servicio */}
+      {isMaestro && (
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] mb-2" style={{ color: T.muted }}>Acceso a {servicioActual?.nombre || "este servicio"}</p>
+          <div className="flex flex-col gap-5">
+            <SolicitudesPendientes ctx={ctx} />
+            <PersonasDelServicio ctx={ctx} />
+            <InvitacionesConfig ctx={ctx} />
+          </div>
+        </div>
+      )}
+
+      {conTurnos && (!reglas || !form) && (
+        <p className="text-[13px]" style={{ color: T.muted }}>Este servicio aún no tiene reglas de turnos configuradas.</p>
+      )}
+      {conTurnos && reglas && form && (
+        <>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] -mb-2 mt-2" style={{ color: T.muted }}>Turnos</p>
       <div className="ev-card p-5">
         <h3 className="ev-display font-semibold text-[15px] mb-1">Reglas obligatorias</h3>
         <p className="text-[12px] mb-4" style={{ color: T.muted }}>Nunca se pueden incumplir al programar turnos.</p>
@@ -4793,71 +4983,12 @@ function Configuracion({ ctx }) {
         </div>
       </div>
 
-      {isMaestro && <SolicitudesPendientes ctx={ctx} />}
-      {isMaestro && <InvitacionesConfig ctx={ctx} />}
-
-      {isMaestro && (
-        <div className="ev-card overflow-hidden">
-          <div className="px-5 py-4 border-b" style={{ borderColor: T.border }}>
-            <h3 className="ev-display font-semibold text-[15px]">Usuarios registrados</h3>
-            <p className="text-[12px]" style={{ color: T.muted }}>Quién tiene acceso a Evoluciona. Puedes cambiar el rol o desactivar el acceso de alguien sin borrar su cuenta.</p>
-          </div>
-          <div className="overflow-x-auto ev-scroll">
-            <table className="w-full text-[13px]">
-              <thead>
-                <tr className="text-left" style={{ color: T.muted }}>
-                  {["Correo", "Rol", "Estado", ""].map((h) => (
-                    <th key={h} className="px-5 py-2 font-medium text-[12px] uppercase tracking-wide">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {ctx.usuariosLista.filter((u) => u.aprobado || !u.activo).map((u) => {
-                  const esUnoMismo = u.correo === ctx.session?.email;
-                  return (
-                    <tr key={u.id} className="border-t" style={{ borderColor: T.border }}>
-                      <td className="px-5 py-2.5">{u.correo}{esUnoMismo && <span className="ml-1.5 text-[11px]" style={{ color: T.muted }}>(tú)</span>}</td>
-                      <td className="px-5 py-2.5">
-                        <select
-                          value={u.rol}
-                          disabled={esUnoMismo}
-                          onChange={(e) => ctx.cambiarRolUsuario(u.id, e.target.value)}
-                          style={{ ...inputStyle, width: "auto", opacity: esUnoMismo ? 0.6 : 1 }}
-                        >
-                          <option value="maestro">Maestro</option>
-                          <option value="lector">Lector</option>
-                        </select>
-                      </td>
-                      <td className="px-5 py-2.5">
-                        <span className="px-2.5 py-1 rounded-full text-[11.5px] font-semibold" style={{ background: u.activo ? T.primarySoft : T.dangerSoft, color: u.activo ? T.primaryDark : T.danger }}>
-                          {!u.activo ? (u.aprobado ? "Desactivado" : "Rechazado") : "Activo"}
-                        </span>
-                      </td>
-                      <td className="px-5 py-2.5 text-right">
-                        <button
-                          onClick={() => ctx.toggleActivoUsuario(u.id, u.activo)}
-                          disabled={esUnoMismo}
-                          className="ev-btn text-[12px] px-2.5 py-1 disabled:opacity-40"
-                          style={u.activo ? { background: T.dangerSoft, color: T.danger } : { border: `1px solid ${T.border}` }}
-                        >
-                          {u.activo ? "Desactivar" : "Reactivar"}
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-                {ctx.usuariosLista.length === 0 && (
-                  <tr><td colSpan={4} className="px-5 py-6 text-center" style={{ color: T.muted }}>No hay usuarios registrados todavía.</td></tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
+        </>
       )}
 
-      {isMaestro && <LiquidacionConfigCard ctx={ctx} />}
-      {isMaestro && <TelegramGrupoConfig />}
-      {isMaestro && <CronEjecucionesLog />}
+      {isMaestro && conTurnos && <LiquidacionConfigCard ctx={ctx} />}
+      {esSuperadmin && <TelegramGrupoConfig />}
+      {esSuperadmin && <CronEjecucionesLog />}
 
       {festivoModal && <FestivoModal ctx={ctx} onClose={() => setFestivoModal(false)} />}
       {ctx.reglaPersonalModal && <ReglaPersonalModal ctx={ctx} onClose={() => ctx.setReglaPersonalModal(false)} />}
@@ -4865,47 +4996,516 @@ function Configuracion({ ctx }) {
   );
 }
 
+/* ============================== PANEL DE CONTROL (superadministrador) ============================== */
+const MODULO_ICONO = {
+  actividades: CalendarDays, turnos: Clock, novedades: UserX, biblioteca: BookOpen,
+  formacion: GraduationCap, evo: Bot, personal: Users, reportes: FileBarChart,
+};
+
+function PanelControl({ ctx }) {
+  const { instituciones, setInstituciones, servicios, setServicios, usuariosLista, showToast, entrarAServicio, servicioActualId, crearServicio, toggleActivoUsuario, loadAll } = ctx;
+  const [miembros, setMiembros] = useState(null);
+  const [errorMiembros, setErrorMiembros] = useState(null);
+  const [editorServicio, setEditorServicio] = useState(null); // { modo: 'crear'|'editar', servicio?, institucionId? }
+  const [nuevaInstitucion, setNuevaInstitucion] = useState(false);
+  const [busqueda, setBusqueda] = useState("");
+
+  async function cargarMiembros() {
+    try {
+      const rows = await sb("miembros?select=*");
+      setMiembros(rows.map(mapMiembro));
+      setErrorMiembros(null);
+    } catch (err) {
+      setErrorMiembros(/miembros/i.test(err.message) ? "Falta correr el SQL de la etapa 2 en Supabase." : err.message);
+      setMiembros([]);
+    }
+  }
+  React.useEffect(() => { cargarMiembros(); }, []);
+
+  const pendientes = usuariosLista.filter((u) => !u.aprobado && u.activo).length;
+  const personasActivas = usuariosLista.filter((u) => u.aprobado && u.activo).length;
+  const serviciosActivos = servicios.filter((sv) => sv.activo).length;
+
+  async function alternarModulo(sv, key) {
+    const modulos = { ...sv.modulos, [key]: !sv.modulos[key] };
+    setServicios((prev) => prev.map((x) => (x.id === sv.id ? { ...x, modulos } : x)));
+    try {
+      const actualizado = await actualizarServicioRemote(sv.id, { modulos });
+      setServicios((prev) => prev.map((x) => (x.id === sv.id ? actualizado : x)));
+      const nombre = MODULOS.find((m) => m.key === key)?.label;
+      showToast(`${nombre} ${modulos[key] ? "activado" : "desactivado"} en ${sv.nombre}`);
+    } catch (err) {
+      setServicios((prev) => prev.map((x) => (x.id === sv.id ? sv : x)));
+      showToast(`No se pudo cambiar: ${err.message}`, "warn");
+    }
+  }
+  async function renombrarInstitucion(inst) {
+    const nombre = window.prompt("Nuevo nombre de la institución:", inst.nombre);
+    if (!nombre || nombre.trim() === inst.nombre) return;
+    try {
+      const [row] = await sb(`instituciones?id=eq.${inst.id}`, { method: "PATCH", body: JSON.stringify({ nombre: nombre.trim() }) });
+      setInstituciones((prev) => prev.map((i) => (i.id === inst.id ? mapInstitucion(row) : i)));
+      showToast("Institución renombrada");
+    } catch (err) {
+      showToast(`No se pudo renombrar: ${err.message}`, "warn");
+    }
+  }
+  async function crearInstitucion(nombre) {
+    try {
+      const [row] = await sb("instituciones", { method: "POST", body: JSON.stringify({ nombre: nombre.trim() }) });
+      const inst = mapInstitucion(row);
+      setInstituciones((prev) => [...prev, inst]);
+      setNuevaInstitucion(false);
+      showToast(`Institución "${inst.nombre}" creada. Ahora agrégale su primer servicio.`);
+      setEditorServicio({ modo: "crear", institucionId: inst.id });
+    } catch (err) {
+      showToast(`No se pudo crear: ${err.message}`, "warn");
+    }
+  }
+  async function guardarServicio({ nombre, institucionId, modulos, activo }) {
+    if (editorServicio.modo === "crear") {
+      const nuevo = await crearServicio(nombre.trim(), institucionId, modulos);
+      if (nuevo) setEditorServicio(null);
+      return;
+    }
+    try {
+      const actualizado = await actualizarServicioRemote(editorServicio.servicio.id, { nombre: nombre.trim(), modulos, activo });
+      setServicios((prev) => prev.map((x) => (x.id === actualizado.id ? actualizado : x)));
+      setEditorServicio(null);
+      showToast("Servicio actualizado");
+      if (!activo && actualizado.id === servicioActualId) loadAll();
+    } catch (err) {
+      showToast(`No se pudo guardar: ${err.message}`, "warn");
+    }
+  }
+  async function quitarMembresia(m) {
+    const u = usuariosLista.find((x) => x.id === m.usuarioId);
+    const sv = servicios.find((x) => x.id === m.servicioId);
+    if (!window.confirm(`¿Quitar a ${u?.correo} de ${sv?.nombre}?`)) return;
+    try {
+      await sb(`miembros?id=eq.${m.id}`, { method: "DELETE", prefer: "return=minimal" });
+      setMiembros((prev) => prev.filter((x) => x.id !== m.id));
+      showToast(`Quitado de ${sv?.nombre}`, "warn");
+    } catch (err) {
+      showToast(`No se pudo quitar: ${err.message}`, "warn");
+    }
+  }
+  async function agregarMembresia(usuarioId, servicioId, rol) {
+    try {
+      const [row] = await sb("miembros?on_conflict=usuario_id,servicio_id", {
+        method: "POST", prefer: "resolution=merge-duplicates,return=representation",
+        body: JSON.stringify({ usuario_id: usuarioId, servicio_id: servicioId, rol }),
+      });
+      const nuevo = mapMiembro(row);
+      setMiembros((prev) => [...prev.filter((x) => !(x.usuarioId === usuarioId && x.servicioId === servicioId)), nuevo]);
+      showToast("Acceso actualizado");
+    } catch (err) {
+      showToast(`No se pudo agregar: ${err.message}`, "warn");
+    }
+  }
+
+  const term = normalizarTexto(busqueda);
+  const personas = usuariosLista
+    .filter((u) => u.aprobado || !u.activo)
+    .filter((u) => !term || normalizarTexto(u.correo).includes(term) || normalizarTexto(u.nombre).includes(term))
+    .sort((a, b) => a.correo.localeCompare(b.correo));
+
+  return (
+    <div className="flex flex-col gap-6 max-w-5xl">
+      <div className="flex items-end justify-between gap-4 flex-wrap">
+        <div>
+          <p className="text-[14px]" style={{ color: T.muted }}>
+            {instituciones.length} {instituciones.length === 1 ? "institución" : "instituciones"}, {serviciosActivos} {serviciosActivos === 1 ? "servicio activo" : "servicios activos"} y {personasActivas} personas con acceso.
+            {pendientes > 0 && <> <strong style={{ color: T.primaryDark }}>{pendientes} {pendientes === 1 ? "solicitud espera" : "solicitudes esperan"} tu aprobación.</strong></>}
+          </p>
+        </div>
+        <button onClick={() => setNuevaInstitucion(true)} className="ev-btn px-3.5 py-2 text-[12.5px]" style={{ border: `1px solid ${T.border}`, background: T.surface }}>
+          <Plus size={14} /> Nueva institución
+        </button>
+      </div>
+
+      {pendientes > 0 && <SolicitudesPendientes ctx={ctx} />}
+
+      {instituciones.map((inst) => {
+        const susServicios = servicios.filter((sv) => sv.institucionId === inst.id);
+        return (
+          <section key={inst.id} className="ev-card overflow-hidden">
+            <div className="flex items-center justify-between gap-3 px-5 sm:px-6 py-4 border-b flex-wrap" style={{ borderColor: T.border }}>
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0" style={{ background: T.primarySoft }}>
+                  <Building2 size={17} style={{ color: T.primary }} />
+                </div>
+                <div className="min-w-0">
+                  <h2 className="ev-display text-[17px] font-bold truncate">{inst.nombre}</h2>
+                  <p className="text-[12px]" style={{ color: T.muted }}>{susServicios.length} {susServicios.length === 1 ? "servicio" : "servicios"}</p>
+                </div>
+                <button onClick={() => renombrarInstitucion(inst)} title="Renombrar institución" className="p-1.5 rounded-md" style={{ color: T.muted }}>
+                  <Pencil size={13} />
+                </button>
+              </div>
+              <button onClick={() => setEditorServicio({ modo: "crear", institucionId: inst.id })} className="ev-btn px-3 py-1.5 text-[12.5px] text-white" style={{ background: T.primary }}>
+                <Plus size={13} /> Nuevo servicio
+              </button>
+            </div>
+
+            <div className="flex flex-col">
+              {susServicios.map((sv) => {
+                const deEste = (miembros || []).filter((m) => m.servicioId === sv.id);
+                const nMaestros = deEste.filter((m) => m.rol === "maestro").length;
+                const nLectores = deEste.length - nMaestros;
+                return (
+                  <div key={sv.id} className="grid gap-3 px-5 sm:px-6 py-4 border-b last:border-b-0 lg:grid-cols-[minmax(150px,1.1fr)_auto_minmax(120px,0.9fr)_auto] lg:items-center" style={{ borderColor: T.border, opacity: sv.activo ? 1 : 0.6 }}>
+                    <div className="min-w-0">
+                      <p className="font-semibold text-[15px] truncate flex items-center gap-2">
+                        {sv.nombre}
+                        {sv.id === servicioActualId && <span className="text-[10.5px] font-semibold px-1.5 py-0.5 rounded-full" style={{ background: T.primarySoft, color: T.primaryDark }}>Abierto ahora</span>}
+                        {!sv.activo && <span className="text-[10.5px] font-semibold px-1.5 py-0.5 rounded-full" style={{ background: T.dangerSoft, color: T.danger }}>Desactivado</span>}
+                      </p>
+                    </div>
+
+                    {/* Tira de funciones: un clic activa o apaga cada una */}
+                    <div className="flex items-center gap-1 flex-wrap" role="group" aria-label={`Funciones de ${sv.nombre}`}>
+                      {MODULOS.map((m) => {
+                        const Icono = MODULO_ICONO[m.key];
+                        const on = sv.modulos[m.key] !== false;
+                        return (
+                          <button
+                            key={m.key}
+                            onClick={() => alternarModulo(sv, m.key)}
+                            aria-pressed={on}
+                            title={`${m.label}: ${on ? "activado" : "apagado"} — clic para ${on ? "apagar" : "activar"}`}
+                            className="w-8 h-8 rounded-lg flex items-center justify-center transition-colors"
+                            style={{
+                              background: on ? T.primarySoft : "transparent",
+                              color: on ? T.primary : T.muted,
+                              border: `1px solid ${on ? "transparent" : T.border}`,
+                              opacity: on ? 1 : 0.55,
+                            }}
+                          >
+                            <Icono size={15} />
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    <p className="text-[12.5px]" style={{ color: T.muted }}>
+                      {miembros === null ? "…" : (
+                        <>
+                          {nMaestros} {nMaestros === 1 ? "Maestro" : "Maestros"}, {nLectores} {nLectores === 1 ? "Lector" : "Lectores"}
+                          {nMaestros === 0 && sv.activo && <span className="block text-[11.5px]" style={{ color: T.danger }}>Sin Maestro asignado</span>}
+                        </>
+                      )}
+                    </p>
+
+                    <div className="flex items-center gap-1.5 flex-wrap lg:justify-end">
+                      <button onClick={() => entrarAServicio(sv.id, "dashboard")} disabled={!sv.activo} className="ev-btn px-3 py-1.5 text-[12px] text-white disabled:opacity-40" style={{ background: T.primary }}>
+                        Entrar
+                      </button>
+                      <button onClick={() => entrarAServicio(sv.id, "configuracion")} disabled={!sv.activo} title="Personas, códigos y reglas del servicio" className="ev-btn px-2.5 py-1.5 text-[12px] disabled:opacity-40" style={{ border: `1px solid ${T.border}` }}>
+                        <Settings size={13} /> Configuración
+                      </button>
+                      {sv.modulos.personal !== false && (
+                        <button onClick={() => entrarAServicio(sv.id, "personal")} disabled={!sv.activo} className="ev-btn px-2.5 py-1.5 text-[12px] disabled:opacity-40" style={{ border: `1px solid ${T.border}` }}>
+                          <Users size={13} /> Personal
+                        </button>
+                      )}
+                      <button onClick={() => setEditorServicio({ modo: "editar", servicio: sv })} title="Editar nombre, funciones o desactivar" className="ev-btn px-2 py-1.5 text-[12px]" style={{ border: `1px solid ${T.border}`, color: T.muted }}>
+                        <Pencil size={13} />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+              {susServicios.length === 0 && (
+                <p className="px-6 py-6 text-[13px]" style={{ color: T.muted }}>Esta institución aún no tiene servicios. Crea el primero con "Nuevo servicio".</p>
+              )}
+            </div>
+          </section>
+        );
+      })}
+
+      {instituciones.length === 0 && (
+        <div className="ev-card p-6 text-[13px]" style={{ color: T.muted }}>
+          Todavía no hay instituciones. Si acabas de actualizar, corre el SQL de la etapa 2 en Supabase y recarga.
+        </div>
+      )}
+
+      {/* Personas: a qué servicios tiene acceso cada una */}
+      <section className="ev-card overflow-hidden">
+        <div className="px-5 sm:px-6 py-4 border-b flex items-center justify-between gap-3 flex-wrap" style={{ borderColor: T.border }}>
+          <div>
+            <h2 className="ev-display text-[16px] font-bold">Personas y sus servicios</h2>
+            <p className="text-[12px]" style={{ color: T.muted }}>Quita con × el acceso a los servicios que no le correspondan a cada persona.</p>
+          </div>
+          <div className="relative w-full sm:w-64">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: T.muted }} />
+            <input value={busqueda} onChange={(e) => setBusqueda(e.target.value)} placeholder="Buscar por correo o nombre" style={{ ...inputStyle, paddingLeft: 32, padding: "8px 12px 8px 32px", fontSize: 13 }} />
+          </div>
+        </div>
+        {errorMiembros && <p className="px-6 py-4 text-[12.5px]" style={{ color: T.danger }}>{errorMiembros}</p>}
+        <div className="flex flex-col">
+          {personas.map((u) => (
+            <FilaPersonaPanel
+              key={u.id}
+              u={u}
+              miembros={(miembros || []).filter((m) => m.usuarioId === u.id)}
+              servicios={servicios}
+              instituciones={instituciones}
+              esUnoMismo={u.id === ctx.session?.id}
+              onQuitar={quitarMembresia}
+              onAgregar={agregarMembresia}
+              onToggleActivo={() => toggleActivoUsuario(u.id, u.activo)}
+            />
+          ))}
+          {personas.length === 0 && <p className="px-6 py-6 text-[13px] text-center" style={{ color: T.muted }}>Nadie coincide con "{busqueda}".</p>}
+        </div>
+      </section>
+
+      {editorServicio && (
+        <ServicioEditorModal
+          inicial={editorServicio}
+          instituciones={instituciones}
+          saving={ctx.saving}
+          onGuardar={guardarServicio}
+          onClose={() => setEditorServicio(null)}
+        />
+      )}
+      {nuevaInstitucion && <NuevaInstitucionModal onCrear={crearInstitucion} onClose={() => setNuevaInstitucion(false)} />}
+    </div>
+  );
+}
+
+function FilaPersonaPanel({ u, miembros, servicios, instituciones, esUnoMismo, onQuitar, onAgregar, onToggleActivo }) {
+  const [abierto, setAbierto] = useState(false);
+  const [destino, setDestino] = useState({ servicioId: "", rol: "lector" });
+  const disponibles = servicios.filter((sv) => sv.activo && !miembros.some((m) => m.servicioId === sv.id));
+  const nombreSv = (id) => {
+    const sv = servicios.find((x) => x.id === id);
+    const inst = instituciones.find((i) => i.id === sv?.institucionId);
+    return instituciones.length > 1 && inst ? `${inst.nombre} · ${sv?.nombre}` : sv?.nombre || "Servicio";
+  };
+  return (
+    <div className="flex items-center gap-3 px-5 sm:px-6 py-3 border-b last:border-b-0 flex-wrap" style={{ borderColor: T.border, opacity: u.activo ? 1 : 0.6 }}>
+      <div className="min-w-[200px] flex-1">
+        <p className="text-[13.5px] font-medium truncate">
+          {u.correo}
+          {esUnoMismo && <span className="ml-1.5 text-[11px] font-normal" style={{ color: T.muted }}>(tú)</span>}
+        </p>
+        {u.esSuperadmin ? (
+          <p className="text-[11.5px]" style={{ color: T.primaryDark }}>Superadministrador · ve todos los servicios</p>
+        ) : !u.activo ? (
+          <p className="text-[11.5px]" style={{ color: T.danger }}>Cuenta desactivada</p>
+        ) : miembros.length === 0 ? (
+          <p className="text-[11.5px]" style={{ color: T.danger }}>Sin servicio: no puede entrar a nada</p>
+        ) : null}
+      </div>
+      <div className="flex items-center gap-1.5 flex-wrap">
+        {miembros.map((m) => (
+          <span key={m.id} className="inline-flex items-center gap-1 pl-2.5 pr-1 py-0.5 rounded-full text-[12px]" style={{ background: m.rol === "maestro" ? T.primarySoft : T.base, color: m.rol === "maestro" ? T.primaryDark : T.ink, border: `1px solid ${m.rol === "maestro" ? "transparent" : T.border}` }}>
+            {nombreSv(m.servicioId)}: {m.rol === "maestro" ? "Maestro" : "Lector"}
+            {!esUnoMismo && (
+              <button onClick={() => onQuitar(m)} aria-label={`Quitar de ${nombreSv(m.servicioId)}`} className="w-5 h-5 rounded-full flex items-center justify-center" style={{ color: T.muted }}>
+                <X size={12} />
+              </button>
+            )}
+          </span>
+        ))}
+        {!esUnoMismo && disponibles.length > 0 && !abierto && (
+          <button onClick={() => { setAbierto(true); setDestino({ servicioId: disponibles[0].id, rol: "lector" }); }} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[12px]" style={{ color: T.primary, border: `1px dashed ${T.border}` }}>
+            <Plus size={12} /> Servicio
+          </button>
+        )}
+        {abierto && (
+          <span className="inline-flex items-center gap-1.5 flex-wrap">
+            <select value={destino.servicioId} onChange={(e) => setDestino((d) => ({ ...d, servicioId: e.target.value }))} style={{ ...inputStyle, width: "auto", padding: "4px 8px", fontSize: 12 }}>
+              {disponibles.map((sv) => <option key={sv.id} value={sv.id}>{nombreSv(sv.id)}</option>)}
+            </select>
+            <select value={destino.rol} onChange={(e) => setDestino((d) => ({ ...d, rol: e.target.value }))} style={{ ...inputStyle, width: "auto", padding: "4px 8px", fontSize: 12 }}>
+              <option value="lector">Lector</option>
+              <option value="maestro">Maestro</option>
+            </select>
+            <button onClick={() => { onAgregar(u.id, destino.servicioId, destino.rol); setAbierto(false); }} className="ev-btn px-2.5 py-1 text-[12px] text-white" style={{ background: T.primary }}>Agregar</button>
+            <button onClick={() => setAbierto(false)} className="p-1" style={{ color: T.muted }} aria-label="Cancelar"><X size={13} /></button>
+          </span>
+        )}
+      </div>
+      {!esUnoMismo && !u.esSuperadmin && (
+        <button onClick={onToggleActivo} className="ev-btn text-[12px] px-2.5 py-1 shrink-0" style={u.activo ? { color: T.danger, border: `1px solid ${T.border}` } : { border: `1px solid ${T.border}` }}>
+          {u.activo ? "Desactivar cuenta" : "Reactivar"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function ServicioEditorModal({ inicial, instituciones, saving, onGuardar, onClose }) {
+  const sv = inicial.servicio;
+  const [nombre, setNombre] = useState(sv?.nombre || "");
+  const [institucionId, setInstitucionId] = useState(sv?.institucionId || inicial.institucionId || instituciones[0]?.id || "");
+  const [modulos, setModulos] = useState(sv ? { ...sv.modulos } : { ...MODULOS_TODOS });
+  const [activo, setActivo] = useState(sv ? sv.activo : true);
+  const creando = inicial.modo === "crear";
+  const nActivos = MODULOS.filter((m) => modulos[m.key] !== false).length;
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 sm:p-4" onClick={onClose}>
+      <div className="ev-card ev-sheet ev-fade-in w-full sm:max-w-lg max-h-[92vh] overflow-y-auto ev-scroll p-5 sm:p-6" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="ev-display font-semibold text-[17px]">{creando ? "Nuevo servicio" : `Editar ${sv.nombre}`}</h3>
+          <button onClick={onClose} aria-label="Cerrar"><X size={18} /></button>
+        </div>
+        <div className="flex flex-col gap-4">
+          <Field label="Nombre del servicio">
+            <input value={nombre} onChange={(e) => setNombre(e.target.value)} placeholder="Ej. Grupo de familias" style={inputStyle} autoFocus />
+          </Field>
+          {creando && instituciones.length > 1 && (
+            <Field label="Institución">
+              <select value={institucionId} onChange={(e) => setInstitucionId(e.target.value)} style={inputStyle}>
+                {instituciones.map((i) => <option key={i.id} value={i.id}>{i.nombre}</option>)}
+              </select>
+            </Field>
+          )}
+          <div>
+            <p className="text-[11.5px] font-medium mb-2" style={{ color: T.muted }}>Funciones de este servicio ({nActivos} de {MODULOS.length} activas)</p>
+            <div className="grid sm:grid-cols-2 gap-2">
+              {MODULOS.map((m) => {
+                const Icono = MODULO_ICONO[m.key];
+                const on = modulos[m.key] !== false;
+                return (
+                  <button
+                    key={m.key}
+                    type="button"
+                    onClick={() => setModulos((prev) => ({ ...prev, [m.key]: !on }))}
+                    aria-pressed={on}
+                    className="flex items-start gap-2.5 text-left rounded-xl px-3 py-2.5 transition-colors"
+                    style={{ border: `1px solid ${on ? T.primary : T.border}`, background: on ? T.primarySoft : T.surface }}
+                  >
+                    <Icono size={16} className="shrink-0 mt-0.5" style={{ color: on ? T.primary : T.muted }} />
+                    <span className="min-w-0">
+                      <span className="block text-[13px] font-semibold" style={{ color: on ? T.primaryDark : T.ink }}>{m.label}</span>
+                      <span className="block text-[11.5px] leading-snug" style={{ color: T.muted }}>{m.desc}</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-[11.5px] mt-2" style={{ color: T.muted }}>Dashboard y Configuración siempre están disponibles. Apagar una función la oculta del menú, sin borrar sus datos.</p>
+          </div>
+          {!creando && (
+            <label className="flex items-center justify-between gap-3 pt-3 border-t" style={{ borderColor: T.border }}>
+              <span>
+                <span className="block text-[13.5px] font-medium">Servicio activo</span>
+                <span className="block text-[12px]" style={{ color: T.muted }}>Si lo desactivas, nadie (salvo tú) podrá entrar. No se borra nada.</span>
+              </span>
+              <input type="checkbox" checked={activo} onChange={(e) => setActivo(e.target.checked)} className="w-4 h-4 shrink-0" />
+            </label>
+          )}
+        </div>
+        <div className="flex justify-end gap-2 mt-6">
+          <button onClick={onClose} className="ev-btn px-4 py-2 text-[13px]" style={{ border: `1px solid ${T.border}` }}>Cancelar</button>
+          <button
+            onClick={() => onGuardar({ nombre, institucionId, modulos, activo })}
+            disabled={!nombre.trim() || !institucionId || saving}
+            className="ev-btn px-4 py-2 text-[13px] text-white disabled:opacity-40"
+            style={{ background: T.primary }}
+          >
+            {saving ? "Guardando…" : creando ? "Crear servicio" : "Guardar cambios"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function NuevaInstitucionModal({ onCrear, onClose }) {
+  const [nombre, setNombre] = useState("");
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div className="ev-card w-full max-w-sm p-5" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="ev-display font-semibold text-[16px]">Nueva institución</h3>
+          <button onClick={onClose} aria-label="Cerrar"><X size={18} /></button>
+        </div>
+        <Field label="Nombre">
+          <input value={nombre} onChange={(e) => setNombre(e.target.value)} placeholder="Ej. Fundación Renacer" style={inputStyle} autoFocus />
+        </Field>
+        <p className="text-[12px] mt-2" style={{ color: T.muted }}>Sus servicios, personas y contenido quedan separados de las demás instituciones.</p>
+        <div className="flex justify-end gap-2 mt-5">
+          <button onClick={onClose} className="ev-btn px-4 py-2 text-[13px]" style={{ border: `1px solid ${T.border}` }}>Cancelar</button>
+          <button onClick={() => onCrear(nombre)} disabled={!nombre.trim()} className="ev-btn px-4 py-2 text-[13px] text-white disabled:opacity-40" style={{ background: T.primary }}>
+            Crear institución
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SolicitudesPendientes({ ctx }) {
-  const { usuariosLista, aprobarUsuario, toggleActivoUsuario } = ctx;
+  const { usuariosLista, aprobarUsuario, toggleActivoUsuario, servicios, servicioActualId, esSuperadmin, instituciones } = ctx;
   const pendientes = usuariosLista.filter((u) => !u.aprobado && u.activo);
+  const [destino, setDestino] = useState({}); // usuarioId -> { servicioId, rol }
+  const opcionesServicio = esSuperadmin ? servicios.filter((sv) => sv.activo) : servicios.filter((sv) => sv.id === servicioActualId);
+  const nombreServicio = (sv) => {
+    const inst = instituciones.find((i) => i.id === sv.institucionId);
+    return instituciones.length > 1 && inst ? `${inst.nombre} · ${sv.nombre}` : sv.nombre;
+  };
+  function elegido(u) {
+    return { servicioId: servicioActualId, rol: "lector", ...(destino[u.id] || {}) };
+  }
   function rechazar(u) {
-    if (window.confirm(`¿Rechazar la solicitud de ${u.correo}? No podrá entrar. Puedes reactivarla después desde "Usuarios registrados".`)) {
+    if (window.confirm(`¿Rechazar la solicitud de ${u.correo}? No podrá entrar. Puedes reactivarla después.`)) {
       toggleActivoUsuario(u.id, true);
     }
   }
   return (
     <div className="ev-card overflow-hidden" style={pendientes.length > 0 ? { border: `1px solid color-mix(in srgb, ${T.primary} 35%, ${T.border})` } : undefined}>
-      <div className="px-5 py-4 border-b flex items-center justify-between gap-3" style={{ borderColor: T.border }}>
-        <div>
-          <h3 className="ev-display font-semibold text-[15px] flex items-center gap-2">
-            Solicitudes de acceso
-            {pendientes.length > 0 && (
-              <span className="px-2 py-0.5 rounded-full text-[11.5px] font-bold text-white" style={{ background: T.primary }}>{pendientes.length}</span>
-            )}
-          </h3>
-          <p className="text-[12px]" style={{ color: T.muted }}>Cuentas nuevas que esperan tu aprobación. Mientras tanto no pueden ver ningún dato.</p>
-        </div>
+      <div className="px-5 py-4 border-b" style={{ borderColor: T.border }}>
+        <h3 className="ev-display font-semibold text-[15px] flex items-center gap-2">
+          Solicitudes de acceso
+          {pendientes.length > 0 && (
+            <span className="px-2 py-0.5 rounded-full text-[11.5px] font-bold text-white" style={{ background: T.primary }}>{pendientes.length}</span>
+          )}
+        </h3>
+        <p className="text-[12px]" style={{ color: T.muted }}>Cuentas nuevas sin código de invitación. Mientras no las apruebes no ven ningún dato.</p>
       </div>
       <div className="flex flex-col divide-y" style={{ borderColor: T.border }}>
-        {pendientes.map((u) => (
-          <div key={u.id} className="flex items-center justify-between gap-3 px-5 py-3 flex-wrap">
-            <div className="min-w-0">
-              <p className="text-[13.5px] font-medium truncate">{u.nombre && u.nombre !== u.correo ? u.nombre : u.correo}</p>
-              <p className="text-[12px] truncate" style={{ color: T.muted }}>
-                {u.nombre && u.nombre !== u.correo ? `${u.correo} · ` : ""}
-                {u.createdAt ? `se registró el ${new Date(u.createdAt).toLocaleDateString("es-CO", { day: "numeric", month: "short" })}` : "nueva cuenta"}
-              </p>
+        {pendientes.map((u) => {
+          const d = elegido(u);
+          return (
+            <div key={u.id} className="px-5 py-3 flex flex-col gap-2.5">
+              <div className="min-w-0">
+                <p className="text-[13.5px] font-medium truncate">{u.nombre && u.nombre !== u.correo ? u.nombre : u.correo}</p>
+                <p className="text-[12px] truncate" style={{ color: T.muted }}>
+                  {u.nombre && u.nombre !== u.correo ? `${u.correo} · ` : ""}
+                  {u.createdAt ? `se registró el ${new Date(u.createdAt).toLocaleDateString("es-CO", { day: "numeric", month: "short" })}` : "nueva cuenta"}
+                </p>
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                {esSuperadmin ? (
+                  <>
+                    <select value={d.servicioId || ""} onChange={(e) => setDestino((p) => ({ ...p, [u.id]: { ...d, servicioId: e.target.value } }))} style={{ ...inputStyle, width: "auto", padding: "6px 10px", fontSize: 12.5 }}>
+                      {opcionesServicio.map((sv) => <option key={sv.id} value={sv.id}>{nombreServicio(sv)}</option>)}
+                    </select>
+                    <select value={d.rol} onChange={(e) => setDestino((p) => ({ ...p, [u.id]: { ...d, rol: e.target.value } }))} style={{ ...inputStyle, width: "auto", padding: "6px 10px", fontSize: 12.5 }}>
+                      <option value="lector">Lector</option>
+                      <option value="maestro">Maestro</option>
+                    </select>
+                  </>
+                ) : (
+                  <span className="text-[12px]" style={{ color: T.muted }}>Entrará como Lector de <strong style={{ color: T.ink }}>{opcionesServicio[0]?.nombre}</strong></span>
+                )}
+                <div className="flex gap-2 ml-auto">
+                  <button onClick={() => rechazar(u)} className="ev-btn text-[12px] px-3 py-1.5" style={{ background: T.dangerSoft, color: T.danger }}>
+                    Rechazar
+                  </button>
+                  <button onClick={() => aprobarUsuario(u.id, d.servicioId, d.rol)} disabled={!d.servicioId} className="ev-btn text-[12px] px-3 py-1.5 text-white disabled:opacity-40" style={{ background: T.primary }}>
+                    <CheckCircle2 size={13} /> Aprobar
+                  </button>
+                </div>
+              </div>
             </div>
-            <div className="flex gap-2 shrink-0">
-              <button onClick={() => rechazar(u)} className="ev-btn text-[12px] px-3 py-1.5" style={{ background: T.dangerSoft, color: T.danger }}>
-                Rechazar
-              </button>
-              <button onClick={() => aprobarUsuario(u.id)} className="ev-btn text-[12px] px-3 py-1.5 text-white" style={{ background: T.primary }}>
-                <CheckCircle2 size={13} /> Aprobar
-              </button>
-            </div>
-          </div>
-        ))}
+          );
+        })}
         {pendientes.length === 0 && (
           <p className="px-5 py-5 text-[12.5px] text-center" style={{ color: T.muted }}>No hay solicitudes pendientes.</p>
         )}
@@ -4914,21 +5514,150 @@ function SolicitudesPendientes({ ctx }) {
   );
 }
 
+// Personas con acceso al servicio actual, con su rol EN ESTE servicio.
+// Maestro: puede agregar/quitar Lectores. Superadmin: también nombra Maestros.
+function PersonasDelServicio({ ctx }) {
+  const { servicioActualId, servicioActual, usuariosLista, esSuperadmin, session, showToast, misMiembros, toggleActivoUsuario } = ctx;
+  const [miembros, setMiembros] = useState(null);
+  const [error, setError] = useState(null);
+  const [agregando, setAgregando] = useState("");
+
+  async function cargar() {
+    setError(null);
+    try {
+      const rows = await sb(`miembros?servicio_id=eq.${servicioActualId}&select=*`);
+      setMiembros(rows.map(mapMiembro));
+    } catch (err) {
+      setError(/miembros/i.test(err.message) ? "Falta correr el SQL de la etapa 2 en Supabase." : err.message);
+    }
+  }
+  React.useEffect(() => { if (misMiembros) cargar(); }, [servicioActualId, misMiembros]);
+  if (!misMiembros) return null;
+
+  const filas = (miembros || [])
+    .map((m) => ({ ...m, usuario: usuariosLista.find((u) => u.id === m.usuarioId) }))
+    .filter((m) => m.usuario)
+    .sort((a, b) => (a.rol === b.rol ? a.usuario.correo.localeCompare(b.usuario.correo) : a.rol === "maestro" ? -1 : 1));
+  // Personas ya aprobadas que aún no están en este servicio (para agregarlas).
+  const candidatos = usuariosLista.filter((u) => u.aprobado && u.activo && !(miembros || []).some((m) => m.usuarioId === u.id));
+
+  async function cambiarRol(m, rol) {
+    try {
+      await sb(`miembros?id=eq.${m.id}`, { method: "PATCH", body: JSON.stringify({ rol }) });
+      setMiembros((prev) => prev.map((x) => (x.id === m.id ? { ...x, rol } : x)));
+      showToast(rol === "maestro" ? `${m.usuario.correo} ahora es Maestro de ${servicioActual?.nombre}` : "Rol actualizado");
+    } catch (err) {
+      showToast(`No se pudo cambiar: ${err.message.replace(/^Supabase.*?: /, "")}`, "warn");
+    }
+  }
+  async function quitar(m) {
+    if (!window.confirm(`¿Quitar a ${m.usuario.correo} de ${servicioActual?.nombre}? Su cuenta sigue existiendo, pero ya no verá este servicio.`)) return;
+    try {
+      await sb(`miembros?id=eq.${m.id}`, { method: "DELETE", prefer: "return=minimal" });
+      setMiembros((prev) => prev.filter((x) => x.id !== m.id));
+      showToast("Persona quitada del servicio", "warn");
+    } catch (err) {
+      showToast(`No se pudo quitar: ${err.message.replace(/^Supabase.*?: /, "")}`, "warn");
+    }
+  }
+  async function agregar() {
+    if (!agregando) return;
+    try {
+      const [row] = await sb("miembros", { method: "POST", body: JSON.stringify({ usuario_id: agregando, servicio_id: servicioActualId, rol: "lector" }) });
+      setMiembros((prev) => [...(prev || []), mapMiembro(row)]);
+      setAgregando("");
+      showToast("Persona agregada como Lector");
+    } catch (err) {
+      showToast(`No se pudo agregar: ${err.message.replace(/^Supabase.*?: /, "")}`, "warn");
+    }
+  }
+
+  return (
+    <div className="ev-card overflow-hidden">
+      <div className="px-5 py-4 border-b" style={{ borderColor: T.border }}>
+        <h3 className="ev-display font-semibold text-[15px]">Personas con acceso</h3>
+        <p className="text-[12px]" style={{ color: T.muted }}>
+          Quién puede entrar a {servicioActual?.nombre || "este servicio"}. {esSuperadmin ? "Como superadministrador puedes nombrar Maestros." : "Solo el superadministrador puede nombrar Maestros."}
+        </p>
+      </div>
+      {error && <p className="px-5 py-4 text-[12.5px]" style={{ color: T.danger }}>{error}</p>}
+      {!error && miembros === null && <p className="px-5 py-4 text-[12.5px]" style={{ color: T.muted }}>Cargando…</p>}
+      {!error && miembros !== null && (
+        <div className="flex flex-col divide-y" style={{ borderColor: T.border }}>
+          {filas.map((m) => {
+            const esUnoMismo = m.usuarioId === session?.id;
+            const puedeEditar = !esUnoMismo && (esSuperadmin || m.rol === "lector");
+            return (
+              <div key={m.id} className="flex items-center justify-between gap-3 px-5 py-2.5 flex-wrap">
+                <div className="min-w-0">
+                  <p className="text-[13px] font-medium truncate">
+                    {m.usuario.correo}
+                    {esUnoMismo && <span className="ml-1.5 text-[11px] font-normal" style={{ color: T.muted }}>(tú)</span>}
+                    {m.usuario.esSuperadmin && <span className="ml-1.5 text-[10.5px] font-semibold px-1.5 py-0.5 rounded-full" style={{ background: T.primarySoft, color: T.primaryDark }}>Superadmin</span>}
+                    {!m.usuario.activo && <span className="ml-1.5 text-[10.5px] font-semibold px-1.5 py-0.5 rounded-full" style={{ background: T.dangerSoft, color: T.danger }}>Cuenta desactivada</span>}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  {esSuperadmin && !esUnoMismo ? (
+                    <select value={m.rol} onChange={(e) => cambiarRol(m, e.target.value)} style={{ ...inputStyle, width: "auto", padding: "5px 10px", fontSize: 12.5 }}>
+                      <option value="maestro">Maestro</option>
+                      <option value="lector">Lector</option>
+                    </select>
+                  ) : (
+                    <span className="px-2.5 py-1 rounded-full text-[11.5px] font-semibold" style={{ background: m.rol === "maestro" ? T.primarySoft : T.base, color: m.rol === "maestro" ? T.primaryDark : T.muted, border: m.rol === "maestro" ? "none" : `1px solid ${T.border}` }}>
+                      {m.rol === "maestro" ? "Maestro" : "Lector"}
+                    </span>
+                  )}
+                  {puedeEditar && (
+                    <button onClick={() => quitar(m)} title="Quitar de este servicio" className="ev-btn text-[12px] px-2.5 py-1" style={{ border: `1px solid ${T.border}`, color: T.muted }}>
+                      Quitar
+                    </button>
+                  )}
+                  {esSuperadmin && !esUnoMismo && (
+                    <button onClick={() => toggleActivoUsuario(m.usuario.id, m.usuario.activo)} title={m.usuario.activo ? "Desactivar la cuenta en toda la plataforma" : "Reactivar la cuenta"} className="ev-btn text-[12px] px-2.5 py-1" style={m.usuario.activo ? { background: T.dangerSoft, color: T.danger } : { border: `1px solid ${T.border}` }}>
+                      {m.usuario.activo ? "Desactivar" : "Reactivar"}
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+          {filas.length === 0 && <p className="px-5 py-5 text-[12.5px] text-center" style={{ color: T.muted }}>Nadie tiene acceso a este servicio todavía.</p>}
+          {candidatos.length > 0 && (
+            <div className="flex items-center gap-2 px-5 py-3 flex-wrap" style={{ background: T.base }}>
+              <select value={agregando} onChange={(e) => setAgregando(e.target.value)} style={{ ...inputStyle, width: "auto", flex: "1 1 220px", padding: "7px 10px", fontSize: 12.5 }}>
+                <option value="">Agregar a alguien que ya tiene cuenta…</option>
+                {candidatos.map((u) => <option key={u.id} value={u.id}>{u.correo}</option>)}
+              </select>
+              <button onClick={agregar} disabled={!agregando} className="ev-btn px-3 py-1.5 text-[12px] text-white disabled:opacity-40" style={{ background: T.primary }}>
+                <Plus size={13} /> Agregar como Lector
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function InvitacionesConfig({ ctx }) {
-  const { servicios, session, showToast } = ctx;
+  const { servicios, session, showToast, servicioActualId, esSuperadmin, misMiembros } = ctx;
   const [lista, setLista] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState(null);
   const [creando, setCreando] = useState(false);
   const [formAbierto, setFormAbierto] = useState(false);
-  const [form, setForm] = useState({ nota: "", servicioId: "", usosMax: 1, dias: 7 });
+  const formVacio = { nota: "", servicioId: servicioActualId || "", rol: "lector", usosMax: 1, dias: 7 };
+  const [form, setForm] = useState(formVacio);
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
   async function cargar() {
     setCargando(true);
     setError(null);
     try {
-      const filas = await sb("invitaciones?select=*&order=created_at.desc&limit=50");
+      // El superadmin ve los códigos de todos los servicios; un Maestro, los de su servicio.
+      const filtro = esSuperadmin || !misMiembros ? "" : `servicio_id=eq.${servicioActualId}&`;
+      const filas = await sb(`invitaciones?${filtro}select=*&order=created_at.desc&limit=50`);
       setLista(filas.map(mapInvitacion));
     } catch (err) {
       setError(/invitaciones/i.test(err.message) && /404|42P01|does not exist|PGRST/i.test(err.message)
@@ -4938,7 +5667,7 @@ function InvitacionesConfig({ ctx }) {
       setCargando(false);
     }
   }
-  React.useEffect(() => { cargar(); }, []);
+  React.useEffect(() => { cargar(); setForm(formVacio); }, [servicioActualId]);
 
   function enlaceDe(inv) {
     return `${window.location.origin}/?invitacion=${inv.codigo}`;
@@ -4958,7 +5687,8 @@ function InvitacionesConfig({ ctx }) {
       const body = {
         codigo: generarCodigoInvitacion(),
         nota: form.nota.trim() || null,
-        servicio_id: form.servicioId || null,
+        servicio_id: form.servicioId || servicioActualId || null,
+        ...(misMiembros ? { rol: esSuperadmin ? form.rol : "lector" } : {}),
         usos_max: Math.max(1, Number(form.usosMax) || 1),
         expira_en: dias > 0 ? new Date(Date.now() + dias * 86400000).toISOString() : null,
         creado_por: session?.id || null,
@@ -4967,7 +5697,7 @@ function InvitacionesConfig({ ctx }) {
       const nueva = mapInvitacion(row);
       setLista((prev) => [nueva, ...prev]);
       setFormAbierto(false);
-      setForm({ nota: "", servicioId: "", usosMax: 1, dias: 7 });
+      setForm(formVacio);
       await copiar(enlaceDe(nueva), "Enlace de invitación");
     } catch (err) {
       showToast(`No se pudo crear: ${err.message}`, "warn");
@@ -5005,12 +5735,25 @@ function InvitacionesConfig({ ctx }) {
             <input value={form.nota} onChange={(e) => set("nota", e.target.value)} placeholder="Ej. Auxiliares nuevos de octubre" style={inputStyle} />
           </Field>
           <div className="grid sm:grid-cols-3 gap-3">
-            <Field label="Servicio">
-              <select value={form.servicioId} onChange={(e) => set("servicioId", e.target.value)} style={inputStyle}>
-                <option value="">Cualquiera</option>
-                {servicios.map((sv) => <option key={sv.id} value={sv.id}>{sv.nombre}</option>)}
-              </select>
-            </Field>
+            {esSuperadmin ? (
+              <>
+                <Field label="Servicio">
+                  <select value={form.servicioId} onChange={(e) => set("servicioId", e.target.value)} style={inputStyle}>
+                    {servicios.filter((sv) => sv.activo).map((sv) => <option key={sv.id} value={sv.id}>{sv.nombre}</option>)}
+                  </select>
+                </Field>
+                <Field label="Entra como">
+                  <select value={form.rol} onChange={(e) => set("rol", e.target.value)} style={inputStyle}>
+                    <option value="lector">Lector</option>
+                    <option value="maestro">Maestro</option>
+                  </select>
+                </Field>
+              </>
+            ) : (
+              <Field label="Servicio">
+                <input value={servicios.find((sv) => sv.id === servicioActualId)?.nombre || ""} disabled style={{ ...inputStyle, opacity: 0.7 }} />
+              </Field>
+            )}
             <Field label="Cuántas personas pueden usarlo">
               <input type="number" min={1} max={200} value={form.usosMax} onChange={(e) => set("usosMax", e.target.value)} style={inputStyle} />
             </Field>
@@ -5023,7 +5766,9 @@ function InvitacionesConfig({ ctx }) {
               </select>
             </Field>
           </div>
-          <p className="text-[11.5px]" style={{ color: T.muted }}>Por ahora las personas entran como Lector. Para hacerlas Maestro, cámbiales el rol abajo en "Usuarios registrados".</p>
+          <p className="text-[11.5px]" style={{ color: T.muted }}>
+            {esSuperadmin ? "Quien use el código queda directamente en ese servicio con el rol elegido." : "Quien use el código entra como Lector de este servicio. Solo el superadministrador puede crear códigos de Maestro."}
+          </p>
           <div className="flex justify-end gap-2">
             <button onClick={() => setFormAbierto(false)} className="ev-btn px-3.5 py-2 text-[12.5px]" style={{ border: `1px solid ${T.border}` }}>Cancelar</button>
             <button onClick={crear} disabled={creando} className="ev-btn px-3.5 py-2 text-[12.5px] text-white disabled:opacity-50" style={{ background: T.primary }}>
@@ -5051,7 +5796,7 @@ function InvitacionesConfig({ ctx }) {
                     </span>
                   </p>
                   <p className="text-[12px] mt-0.5" style={{ color: T.muted }}>
-                    {inv.nota ? `${inv.nota} · ` : ""}{servicio ? `${servicio.nombre} · ` : ""}
+                    {inv.nota ? `${inv.nota} · ` : ""}{servicio ? `${servicio.nombre} · ` : ""}{inv.rol === "maestro" ? "como Maestro · " : ""}
                     usado {inv.usos} de {inv.usosMax}
                     {inv.expiraEn ? ` · vence ${new Date(inv.expiraEn).toLocaleDateString("es-CO", { day: "numeric", month: "short" })}` : " · no vence"}
                   </p>
@@ -5263,9 +6008,40 @@ function ReglaPersonalModal({ ctx, onClose }) {
   );
 }
 
+// "¿Quién lo ve?": solo el servicio actual, o todos los servicios de la institución.
+function CampoAlcance({ ctx, value, onChange }) {
+  const { servicioActual, institucionActual } = ctx;
+  if (!institucionActual) return null; // SQL de la etapa 2 aún sin correr
+  return (
+    <Field label="¿Quién lo ve?">
+      <div className="grid grid-cols-2 gap-1 p-1 rounded-lg" style={{ background: T.base, border: `1px solid ${T.border}` }}>
+        {[["servicio", `Solo ${servicioActual?.nombre || "este servicio"}`], ["institucion", `Toda ${institucionActual.nombre}`]].map(([k, label]) => (
+          <button
+            key={k}
+            type="button"
+            onClick={() => onChange(k)}
+            className="ev-btn justify-center px-2 py-1.5 text-[12px] truncate"
+            style={{ background: value === k ? T.surface : "transparent", color: value === k ? T.primaryDark : T.muted, boxShadow: value === k ? T.shadow : "none" }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+    </Field>
+  );
+}
+function EtiquetaInstitucion({ item, ctx }) {
+  if (item.servicioId || !item.institucionId) return null;
+  return (
+    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10.5px] font-semibold" style={{ background: T.surface, color: T.muted, border: `1px solid ${T.border}` }}>
+      <Building2 size={10} /> {ctx.institucionActual?.nombre ? `Toda ${ctx.institucionActual.nombre}` : "Toda la institución"}
+    </span>
+  );
+}
+
 function AvisoModal({ ctx, onClose }) {
   const { crearAviso, saving } = ctx;
-  const [form, setForm] = useState({ titulo: "", mensaje: "", nivel: "info", fechaExpira: "" });
+  const [form, setForm] = useState({ titulo: "", mensaje: "", nivel: "info", fechaExpira: "", alcance: "servicio" });
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
@@ -5290,6 +6066,7 @@ function AvisoModal({ ctx, onClose }) {
           <Field label="Mostrar hasta (opcional)">
             <input type="date" value={form.fechaExpira} onChange={(e) => set("fechaExpira", e.target.value)} style={inputStyle} />
           </Field>
+          <CampoAlcance ctx={ctx} value={form.alcance} onChange={(v) => set("alcance", v)} />
         </div>
         <div className="flex justify-end gap-2 mt-5">
           <button onClick={onClose} className="ev-btn px-4 py-2 text-[13px]" style={{ border: `1px solid ${T.border}` }}>Cancelar</button>
@@ -6638,7 +7415,7 @@ function EvoChat({ ctx }) {
 
 function FormacionModal({ ctx, onClose }) {
   const { subirFormacion, subiendoArchivo } = ctx;
-  const [form, setForm] = useState({ titulo: "", descripcion: "", tipo: "infografia" });
+  const [form, setForm] = useState({ titulo: "", descripcion: "", tipo: "infografia", alcance: "servicio" });
   const [file, setFile] = useState(null);
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
@@ -6661,6 +7438,7 @@ function FormacionModal({ ctx, onClose }) {
           <Field label="Descripción (opcional)">
             <textarea rows={3} value={form.descripcion} onChange={(e) => set("descripcion", e.target.value)} placeholder="De qué trata…" style={{ ...inputStyle, resize: "vertical" }} />
           </Field>
+          <CampoAlcance ctx={ctx} value={form.alcance} onChange={(v) => set("alcance", v)} />
           <Field label={form.tipo === "video" ? "Archivo de video" : form.tipo === "pdf" ? "Archivo PDF" : "Archivo de imagen"}>
             <input
               type="file"
