@@ -108,13 +108,25 @@ const THEME_CSS = `
     --ev-shadow: 0 1px 2px rgba(0,0,0,0.35), 0 4px 16px rgba(0,0,0,0.4);
   }
 `;
+// El tema elegido (claro/oscuro) se guarda en el dispositivo. Si la persona
+// nunca lo ha cambiado, se usa el del sistema (celular o computador).
+const TEMA_LOCAL_KEY = "evoluciona_tema";
 function useTheme() {
-  const [theme, setTheme] = useState("light");
+  const [theme, setThemeState] = useState("light");
   React.useEffect(() => {
     try {
-      if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) setTheme("dark");
+      const guardado = window.localStorage.getItem(TEMA_LOCAL_KEY);
+      if (guardado === "light" || guardado === "dark") { setThemeState(guardado); return; }
+      if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) setThemeState("dark");
     } catch (_) {}
   }, []);
+  function setTheme(valor) {
+    setThemeState((actual) => {
+      const nuevo = typeof valor === "function" ? valor(actual) : valor;
+      try { window.localStorage.setItem(TEMA_LOCAL_KEY, nuevo); } catch (_) {}
+      return nuevo;
+    });
+  }
   return [theme, setTheme];
 }
 function ThemeToggle({ theme, setTheme, compact }) {
@@ -7140,6 +7152,8 @@ function Biblioteca({ ctx }) {
 
 function BibliotecaIndividual({ ctx }) {
   const { biblioteca, temas, isMaestro, setBibModal, deleteBiblioteca, setTemaModal, eliminarTema } = ctx;
+  const [copiando, setCopiando] = useState(null); // null | { preseleccion: [ids] }
+  const destinosCopia = serviciosDestinoCopia(ctx);
   const [busqueda, setBusqueda] = useState("");
   const [abiertos, setAbiertos] = useState(() => new Set()); // ids de temas desplegados ("__sin_tema" para el capítulo final)
   const [leyendoId, setLeyendoId] = useState(null); // actividad abierta en modo lectura
@@ -7194,7 +7208,12 @@ function BibliotecaIndividual({ ctx }) {
           </p>
         </div>
         {isMaestro && (
-          <div className="flex gap-2 shrink-0">
+          <div className="flex gap-2 shrink-0 flex-wrap">
+            {destinosCopia.length > 0 && biblioteca.length > 0 && (
+              <button onClick={() => setCopiando({ preseleccion: [] })} className="ev-btn px-3.5 py-2 text-[12.5px]" style={{ border: `1px solid ${T.border}` }}>
+                <Copy size={14} /> Copiar a otro servicio
+              </button>
+            )}
             <button onClick={() => setTemaModal(true)} className="ev-btn px-3.5 py-2 text-[12.5px]" style={{ border: `1px solid ${T.border}` }}>
               <Plus size={14} /> Nuevo tema
             </button>
@@ -7310,15 +7329,193 @@ function BibliotecaIndividual({ ctx }) {
           onEliminar={() => {
             if (window.confirm(`¿Eliminar "${leyendo.nombre}" de la biblioteca?`)) { setLeyendoId(null); deleteBiblioteca(leyendo.id); }
           }}
+          onCopiar={destinosCopia.length > 0 ? () => { setLeyendoId(null); setCopiando({ preseleccion: [leyendo.id] }); } : null}
         />
+      )}
+      {copiando && (
+        <CopiarBibliotecaModal ctx={ctx} destinos={destinosCopia} preseleccion={copiando.preseleccion} onClose={() => setCopiando(null)} />
       )}
     </>
   );
 }
 
+// Servicios de la MISMA institución a los que esta persona puede copiar
+// actividades: donde es Maestro (o todos, si es superadmin).
+function serviciosDestinoCopia(ctx) {
+  const { servicios, servicioActual, esSuperadmin, misMiembros } = ctx;
+  if (!servicioActual?.institucionId) return [];
+  return (servicios || []).filter((sv) =>
+    sv.id !== servicioActual.id && sv.activo && sv.institucionId === servicioActual.institucionId
+    && (esSuperadmin || (misMiembros || []).some((m) => m.servicioId === sv.id && m.rol === "maestro"))
+  );
+}
+
+// Copia actividades de la biblioteca del servicio actual a otro servicio de la
+// misma institución. Son copias independientes: editar una no cambia la otra.
+// Se respetan los temas (se crean en el destino si no existen) y no se
+// duplican actividades que ya estén allá con el mismo nombre y tema.
+function CopiarBibliotecaModal({ ctx, destinos, preseleccion, onClose }) {
+  const { biblioteca, temas, servicioActual, showToast } = ctx;
+  const [destinoId, setDestinoId] = useState(destinos[0]?.id || "");
+  const [elegidas, setElegidas] = useState(() => new Set(preseleccion || []));
+  const [busqueda, setBusqueda] = useState("");
+  const [copiando, setCopiando] = useState(false);
+  const [resultado, setResultado] = useState(null); // { copiadas, omitidas, destino }
+  const term = normalizarTexto(busqueda);
+
+  const grupos = [
+    ...temas.map((t) => ({ id: t.id, nombre: t.nombre, items: biblioteca.filter((b) => b.temaId === t.id) })),
+    { id: null, nombre: "Sin tema", items: biblioteca.filter((b) => !b.temaId) },
+  ]
+    .map((g) => ({ ...g, items: g.items.filter((b) => !term || normalizarTexto(b.nombre).includes(term) || normalizarTexto(g.nombre).includes(term)).sort((a, b) => a.nombre.localeCompare(b.nombre)) }))
+    .filter((g) => g.items.length > 0);
+
+  function alternar(id) {
+    setElegidas((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  }
+  function alternarGrupo(g) {
+    const todas = g.items.every((b) => elegidas.has(b.id));
+    setElegidas((prev) => { const n = new Set(prev); g.items.forEach((b) => (todas ? n.delete(b.id) : n.add(b.id))); return n; });
+  }
+
+  async function copiar() {
+    const destino = destinos.find((d) => d.id === destinoId);
+    if (!destino || elegidas.size === 0) return;
+    setCopiando(true);
+    try {
+      const [temasDestino, actividadesDestino] = await Promise.all([
+        sb(`temas_biblioteca?servicio_id=eq.${destinoId}&select=id,nombre`),
+        sb(`biblioteca_actividades?servicio_id=eq.${destinoId}&select=nombre,tema_id`),
+      ]);
+      // Tema de origen → tema en el destino (por nombre; se crea si no existe).
+      const temaPorNombre = Object.fromEntries(temasDestino.map((t) => [normalizarTexto(t.nombre), t.id]));
+      const aCopiar = biblioteca.filter((b) => elegidas.has(b.id));
+      const temasNecesarios = [...new Set(aCopiar.map((b) => b.temaId).filter(Boolean))]
+        .map((id) => temas.find((t) => t.id === id))
+        .filter((t) => t && !temaPorNombre[normalizarTexto(t.nombre)]);
+      if (temasNecesarios.length > 0) {
+        const creados = await sb("temas_biblioteca", { method: "POST", body: JSON.stringify(temasNecesarios.map((t) => ({ nombre: t.nombre, servicio_id: destinoId }))) });
+        creados.forEach((t) => { temaPorNombre[normalizarTexto(t.nombre)] = t.id; });
+      }
+      const yaExiste = new Set(actividadesDestino.map((a) => `${normalizarTexto(a.nombre)}|${a.tema_id || ""}`));
+      const filas = [];
+      let omitidas = 0;
+      aCopiar.forEach((b) => {
+        const temaOrigen = temas.find((t) => t.id === b.temaId);
+        const temaDestino = temaOrigen ? temaPorNombre[normalizarTexto(temaOrigen.nombre)] : null;
+        if (yaExiste.has(`${normalizarTexto(b.nombre)}|${temaDestino || ""}`)) { omitidas++; return; }
+        filas.push({ nombre: b.nombre, tipo: b.tipo, metodologia: b.metodologia || null, objetivos: b.objetivos || null, tema_id: temaDestino, servicio_id: destinoId });
+      });
+      if (filas.length > 0) {
+        await sb("biblioteca_actividades", { method: "POST", prefer: "return=minimal", body: JSON.stringify(filas) });
+      }
+      setResultado({ copiadas: filas.length, omitidas, destino: destino.nombre, temasCreados: temasNecesarios.length });
+      showToast(`${filas.length} ${filas.length === 1 ? "actividad copiada" : "actividades copiadas"} a ${destino.nombre}`);
+    } catch (err) {
+      showToast(`No se pudo copiar: ${err.message}`, "warn");
+    } finally {
+      setCopiando(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 sm:p-4" onClick={onClose}>
+      <div className="ev-card ev-sheet ev-fade-in w-full sm:max-w-lg max-h-[92vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <div className="px-5 sm:px-6 pt-5 pb-4 border-b" style={{ borderColor: T.border }}>
+          <div className="flex items-center justify-between mb-1">
+            <h3 className="ev-display font-semibold text-[17px]">Copiar a otro servicio</h3>
+            <button onClick={onClose} aria-label="Cerrar"><X size={18} /></button>
+          </div>
+          <p className="text-[12.5px]" style={{ color: T.muted }}>
+            Las actividades de {servicioActual?.nombre} se copian con su tema. Cada servicio queda con su propia copia: si después editas una, la otra no cambia.
+          </p>
+        </div>
+
+        {resultado ? (
+          <div className="px-5 sm:px-6 py-8 text-center">
+            <div className="w-11 h-11 rounded-xl flex items-center justify-center mx-auto mb-3" style={{ background: T.primarySoft }}>
+              <CheckCircle2 size={20} style={{ color: T.primary }} />
+            </div>
+            <p className="text-[15px] font-semibold">
+              {resultado.copiadas} {resultado.copiadas === 1 ? "actividad copiada" : "actividades copiadas"} a {resultado.destino}
+            </p>
+            <p className="text-[12.5px] mt-1" style={{ color: T.muted }}>
+              {resultado.temasCreados > 0 && `Se ${resultado.temasCreados === 1 ? "creó 1 tema nuevo" : `crearon ${resultado.temasCreados} temas nuevos`}. `}
+              {resultado.omitidas > 0 && `${resultado.omitidas} ya ${resultado.omitidas === 1 ? "existía" : "existían"} allá y no se ${resultado.omitidas === 1 ? "duplicó" : "duplicaron"}.`}
+            </p>
+            <div className="flex justify-center gap-2 mt-6">
+              <button onClick={() => { setResultado(null); setElegidas(new Set()); }} className="ev-btn px-4 py-2 text-[13px]" style={{ border: `1px solid ${T.border}` }}>Copiar otras</button>
+              <button onClick={onClose} className="ev-btn px-4 py-2 text-[13px] text-white" style={{ background: T.primary }}>Listo</button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="px-5 sm:px-6 pt-4 flex flex-col gap-3">
+              <Field label="Copiar a">
+                <select value={destinoId} onChange={(e) => setDestinoId(e.target.value)} style={inputStyle}>
+                  {destinos.map((d) => <option key={d.id} value={d.id}>{d.nombre}</option>)}
+                </select>
+              </Field>
+              {destinos.find((d) => d.id === destinoId)?.modulos?.biblioteca === false && (
+                <p className="text-[12px] rounded-lg px-3 py-2" style={{ background: T.accentSoft, color: T.accentInk }}>
+                  Ese servicio tiene la Biblioteca apagada: las actividades se copian, pero no se verán hasta que la actives en el Panel.
+                </p>
+              )}
+              <div className="relative">
+                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: T.muted }} />
+                <input value={busqueda} onChange={(e) => setBusqueda(e.target.value)} placeholder="Buscar actividad o tema" style={{ ...inputStyle, paddingLeft: 32 }} />
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto ev-scroll px-5 sm:px-6 py-3 mt-1">
+              {grupos.map((g) => {
+                const todas = g.items.every((b) => elegidas.has(b.id));
+                const algunas = !todas && g.items.some((b) => elegidas.has(b.id));
+                return (
+                  <div key={g.id || "sin"} className="mb-3">
+                    <label className="flex items-center gap-2.5 py-1.5 cursor-pointer">
+                      <input type="checkbox" checked={todas} ref={(el) => { if (el) el.indeterminate = algunas; }} onChange={() => alternarGrupo(g)} className="w-4 h-4" />
+                      <span className="text-[13.5px] font-semibold" style={{ color: g.id ? T.ink : T.muted }}>{g.nombre}</span>
+                      <span className="text-[12px]" style={{ color: T.muted }}>{g.items.length}</span>
+                    </label>
+                    <div className="flex flex-col pl-6">
+                      {g.items.map((b) => {
+                        const tipo = ACTIVITY_TYPES[b.tipo] || ACTIVITY_TYPES.terapeutico;
+                        const TipoIcon = tipo.icon;
+                        return (
+                          <label key={b.id} className="flex items-center gap-2.5 py-1.5 cursor-pointer">
+                            <input type="checkbox" checked={elegidas.has(b.id)} onChange={() => alternar(b.id)} className="w-4 h-4" />
+                            <TipoIcon size={13} className="shrink-0" style={{ color: tipo.color }} />
+                            <span className="text-[13px] truncate">{b.nombre}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+              {grupos.length === 0 && <p className="text-[12.5px] text-center py-6" style={{ color: T.muted }}>Nada coincide con "{busqueda}".</p>}
+            </div>
+
+            <div className="flex items-center justify-between gap-2 px-5 sm:px-6 py-4 border-t" style={{ borderColor: T.border }}>
+              <span className="text-[12.5px]" style={{ color: T.muted }}>{elegidas.size} {elegidas.size === 1 ? "seleccionada" : "seleccionadas"}</span>
+              <div className="flex gap-2">
+                <button onClick={onClose} className="ev-btn px-4 py-2 text-[13px]" style={{ border: `1px solid ${T.border}` }}>Cancelar</button>
+                <button onClick={copiar} disabled={copiando || elegidas.size === 0 || !destinoId} className="ev-btn px-4 py-2 text-[13px] text-white disabled:opacity-40" style={{ background: T.primary }}>
+                  {copiando ? "Copiando…" : `Copiar ${elegidas.size || ""} a ${destinos.find((d) => d.id === destinoId)?.nombre || ""}`}
+                </button>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // Vista de lectura de una actividad de la biblioteca: disponible para cualquier
 // usuario (Maestro o Lector). Solo el Maestro ve los botones de editar/eliminar/programar.
-function LecturaActividadModal({ ctx, item, tema, anterior, siguiente, onNavegar, onClose, onEditar, onEliminar }) {
+function LecturaActividadModal({ ctx, item, tema, anterior, siguiente, onNavegar, onClose, onEditar, onEliminar, onCopiar }) {
   const { isMaestro, setModal } = ctx;
   const tipo = ACTIVITY_TYPES[item.tipo] || ACTIVITY_TYPES.terapeutico;
   const TipoIcon = tipo.icon;
@@ -7379,6 +7576,11 @@ function LecturaActividadModal({ ctx, item, tema, anterior, siguiente, onNavegar
               <button onClick={onEditar} className="ev-btn px-3.5 py-2 text-[12.5px]" style={{ border: `1px solid ${T.border}` }}>
                 <Pencil size={13} /> Editar
               </button>
+              {onCopiar && (
+                <button onClick={onCopiar} className="ev-btn px-3.5 py-2 text-[12.5px]" style={{ border: `1px solid ${T.border}` }}>
+                  <Copy size={13} /> Copiar a otro servicio
+                </button>
+              )}
               <button onClick={onEliminar} className="ev-btn px-3.5 py-2 text-[12.5px]" style={{ background: T.dangerSoft, color: T.danger }}>
                 <Trash2 size={13} /> Eliminar
               </button>
