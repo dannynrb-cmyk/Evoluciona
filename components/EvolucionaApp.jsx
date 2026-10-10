@@ -2196,7 +2196,7 @@ export default function EvolucionaApp() {
           {view === "panel" && esSuperadmin && <PanelControl ctx={ctx} />}
           {(view === "dashboard" || NAV.some((n) => n.key === view && !navVisible(n, { isMaestro, esSuperadmin, modulos }))) && <Dashboard ctx={ctx} />}
           {view === "actividades" && modulos.actividades && <ActividadesCalendario ctx={ctx} />}
-          {view === "turnos" && modulos.turnos && <TurnosCalendario ctx={ctx} />}
+          {view === "turnos" && modulos.turnos && <TurnosModulo ctx={ctx} />}
           {view === "novedades" && modulos.novedades && <Novedades ctx={ctx} />}
           {view === "biblioteca" && modulos.biblioteca && <Biblioteca ctx={ctx} />}
           {view === "formacion" && modulos.formacion && <FormacionContinua ctx={ctx} />}
@@ -3844,6 +3844,7 @@ function generarPdfLiquidacion({ items, servicioNombre, institucionNombre, desde
     // Notas
     y = doc.lastAutoTable.finalY + 16;
     const notas = [];
+    if (r.notaHorario) notas.push(r.notaHorario);
     if (r.horasExtraRegistradas > 0) notas.push(`Incluye ${fmtH(r.horasExtraRegistradas)} h de turnos extra registrados en Novedades.`);
     if (esPS) {
       notas.push("Valor bruto: horas trabajadas en el corte × valor hora pactado, con los recargos acordados para horas nocturnas y dominicales/festivas.");
@@ -3886,14 +3887,18 @@ function nombreArchivoSeguro(s) {
 }
 
 // soloPropia = vista del Lector: una sola persona (la suya), sin lista, sin bonificaciones/descuentos.
-function LiquidacionPanel({ ctx, turnos, personas, filtroPersonal, setFiltroPersonal, desde, hasta, festivoSet, etiquetaPeriodo, soloPropia = false }) {
+function LiquidacionPanel({ ctx, turnos, personas, filtroPersonal, setFiltroPersonal, desde, hasta, festivoSet, etiquetaPeriodo, soloPropia = false, notaPorPersona = null }) {
   const { config, rem, error, cargando } = useLiquidacionDatos();
   const [bonif, setBonif] = useState("");
   const [desc, setDesc] = useState("");
   const [fechaPago, setFechaPago] = useState(() => rangoMesCompleto(hasta).fin);
   React.useEffect(() => { setFechaPago(rangoMesCompleto(hasta).fin); }, [hasta]);
   const turnosExtra = ctx.turnosExtra;
-  const filas = personas.map((p) => ({ p, r: calcularLiquidacion({ persona: p, rem: rem[p.id], config, turnos, turnosExtra, festivoSet, desde, hasta }) }));
+  const filas = personas.map((p) => {
+    const r = calcularLiquidacion({ persona: p, rem: rem[p.id], config, turnos, turnosExtra, festivoSet, desde, hasta });
+    const nota = notaPorPersona ? notaPorPersona(p) : null;
+    return { p, r: nota ? { ...r, notaHorario: nota } : r };
+  });
   const sel = soloPropia ? filas[0] || null : filtroPersonal ? filas.find((f) => f.p.id === filtroPersonal) : null;
   const totalGeneral = filas.reduce((a, f) => a + f.r.total, 0);
   const servicioNombre = ctx.servicioActual?.nombre || "";
@@ -4000,6 +4005,7 @@ function LiquidacionPanel({ ctx, turnos, personas, filtroPersonal, setFiltroPers
                   {r.modalidad === "prestacion" ? "Prestación de servicios" : "Contrato laboral"} · {fmtH(r.totalHoras)} h de reloj en el periodo
                   {r.horasExtraRegistradas > 0 ? ` (incluye ${fmtH(r.horasExtraRegistradas)} h de turnos extra registrados)` : ""}
                 </p>
+                {r.notaHorario && <p className="text-[12px]" style={{ color: T.muted }}>{r.notaHorario}</p>}
               </div>
               <div className="flex items-center gap-2 flex-wrap">
                 {campoFechaPago}
@@ -4214,16 +4220,618 @@ function LiquidacionConfigCard({ ctx }) {
   );
 }
 
+/* ============================== TURNOS: pestañas Operativo / Asistencial ============================== */
+// El cronograma OPERATIVO (operadores y auxiliares, tabla "turnos") es el de
+// siempre y no se toca. El ASISTENCIAL (médicos, especialistas, jefes de
+// enfermería, psicólogos, terapeutas…) vive en tablas propias y aparte.
+const TURNOS_TAB_KEY = "evoluciona_turnos_tab";
+function TurnosModulo({ ctx }) {
+  const [tab, setTabState] = useState(() => {
+    try { return window.localStorage.getItem(TURNOS_TAB_KEY) === "asistencial" ? "asistencial" : "operativo"; } catch (_) { return "operativo"; }
+  });
+  function setTab(t) {
+    setTabState(t);
+    try { window.localStorage.setItem(TURNOS_TAB_KEY, t); } catch (_) {}
+  }
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="no-print flex items-center gap-1 p-1 rounded-lg w-fit" style={{ background: T.surface, border: `1px solid ${T.border}` }}>
+        {[["operativo", "Operativo", "Operadores y auxiliares"], ["asistencial", "Asistencial", "Médicos, jefes, psicólogos, terapeutas…"]].map(([k, label, hint]) => (
+          <button
+            key={k}
+            onClick={() => setTab(k)}
+            title={hint}
+            className="ev-btn px-3.5 py-1.5 text-[12.5px]"
+            style={{ background: tab === k ? T.primary : "transparent", color: tab === k ? "#fff" : T.ink }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      {tab === "operativo" ? <TurnosCalendario ctx={ctx} /> : <CronogramaAsistencial ctx={ctx} />}
+    </div>
+  );
+}
+
+// ---------- Datos del cronograma asistencial ----------
+function mapAsisTipo(row) {
+  return { id: row.id, nombre: row.nombre, horaInicio: Number(row.hora_inicio), horas: Number(row.horas) };
+}
+function mapAsisHorario(row) {
+  return { personalId: row.personal_id, modo: row.modo, dias: row.dias || [], horaInicio: Number(row.hora_inicio), horasDia: Number(row.horas_dia) };
+}
+function mapAsisTurno(row) {
+  return { id: row.id, personalId: row.personal_id, fecha: row.fecha, start: Number(row.hora_inicio), end: Number(row.hora_fin), tipoId: row.tipo_id || null, nota: row.nota || "" };
+}
+function useAsistencialDatos(servicioId) {
+  const [datos, setDatos] = useState({ tipos: [], horarios: {}, turnos: [] });
+  const [error, setError] = useState(null);
+  const [cargando, setCargando] = useState(true);
+  const recargar = React.useCallback(async () => {
+    if (!servicioId) return;
+    setCargando(true);
+    try {
+      const s = `servicio_id=eq.${servicioId}`;
+      const [tipos, horarios, turnos] = await Promise.all([
+        sb(`asistencial_tipos_turno?${s}&select=*&order=hora_inicio`),
+        sb(`asistencial_horario?${s}&select=*`),
+        sb(`asistencial_turnos?${s}&select=*&order=fecha`),
+      ]);
+      const h = {};
+      (horarios || []).forEach((r) => { h[r.personal_id] = mapAsisHorario(r); });
+      setDatos({ tipos: (tipos || []).map(mapAsisTipo), horarios: h, turnos: (turnos || []).map(mapAsisTurno) });
+      setError(null);
+    } catch (e) {
+      setError(/asistencial_/i.test(e.message) ? "falta_sql" : e.message);
+    } finally {
+      setCargando(false);
+    }
+  }, [servicioId]);
+  React.useEffect(() => { recargar(); }, [recargar]);
+  return { ...datos, error, cargando, recargar };
+}
+const HORARIO_DEFAULT = { modo: "fijo", dias: [0, 1, 2, 3, 4], horaInicio: 8, horasDia: 8 };
+
+// Convierte el horario fijo + los turnos asistenciales en "turnos" con la misma
+// forma que usa la liquidación (date, start, end, personalId). Así la
+// liquidación reutiliza exactamente el mismo cálculo de recargos que ya funciona.
+// type "asistencial" → no se le descuenta el descanso del turno noche operativo.
+function turnosParaLiquidacionAsistencial({ personas, horarios, turnosAsis, desde, hasta, festivoSet, novedades }) {
+  const out = [];
+  const ids = new Set(personas.map((p) => p.id));
+  // Desde el lunes de la semana del corte, para que el tope semanal de horas cuente bien.
+  const inicio = getMonday(new Date(`${desde}T00:00:00`));
+  const fin = new Date(`${hasta}T00:00:00`);
+  personas.forEach((p) => {
+    const h = horarios[p.id];
+    if (!h || h.modo !== "fijo") return;
+    for (let d = new Date(inicio); d <= fin; d = addDays(d, 1)) {
+      const iso = toISO(d);
+      if (!h.dias.includes((d.getDay() + 6) % 7) || festivoSet.has(iso) || estaAusente(p.id, iso, novedades)) continue;
+      out.push({ id: `fijo-${p.id}-${iso}`, date: iso, start: h.horaInicio, end: h.horaInicio + h.horasDia, type: "asistencial", personalId: p.id, fijo: true });
+    }
+  });
+  turnosAsis.forEach((t) => {
+    if (ids.has(t.personalId)) out.push({ id: t.id, date: t.fecha, start: t.start, end: t.end, type: "asistencial", personalId: t.personalId, tipoId: t.tipoId });
+  });
+  return out;
+}
+function diasHabilesDe(personaId, turnosLiq, desde, hasta) {
+  return turnosLiq.filter((t) => t.fijo && t.personalId === personaId && t.date >= desde && t.date <= hasta).length;
+}
+
+function CronogramaAsistencial({ ctx }) {
+  const { isMaestro, personal, reglas, festivos, novedades, servicioActualId, showToast, session } = ctx;
+  const { tipos, horarios, turnos: turnosAsis, error, cargando, recargar } = useAsistencialDatos(servicioActualId);
+  const festivoSet = new Set((festivos || []).map((f) => f.fecha));
+  // Asistencial = todo el personal activo que NO tiene un cargo del cronograma operativo.
+  const asistenciales = personal.filter((p) => p.estado === "activo" && !esCargoDeTurno(p.cargo, reglas?.cargosTurno));
+  const [mesOffset, setMesOffset] = useState(0);
+  const base = new Date(TODAY.getFullYear(), TODAY.getMonth() + mesOffset, 1);
+  const diasMes = Array.from({ length: new Date(base.getFullYear(), base.getMonth() + 1, 0).getDate() }, (_, i) => new Date(base.getFullYear(), base.getMonth(), i + 1));
+  const [usarRango, setUsarRango] = useState(false);
+  const [rangoDesde, setRangoDesde] = useState(toISO(diasMes[0]));
+  const [rangoHasta, setRangoHasta] = useState(toISO(diasMes[diasMes.length - 1]));
+  const desde = usarRango ? rangoDesde : toISO(diasMes[0]);
+  const hasta = usarRango ? rangoHasta : toISO(diasMes[diasMes.length - 1]);
+  const [celda, setCelda] = useState(null); // { persona, fecha }
+  const [configAbierta, setConfigAbierta] = useState(false);
+  const [filtroLiq, setFiltroLiq] = useState("");
+  const todayISO = toISO(TODAY);
+
+  if (cargando) return <p className="text-[13px]" style={{ color: T.muted }}>Cargando cronograma asistencial…</p>;
+  if (error === "falta_sql") {
+    return (
+      <div className="ev-card p-5 max-w-2xl text-[13px]" style={{ color: T.muted }}>
+        El cronograma asistencial aún no está activado. {isMaestro ? <>Corre el archivo <strong>cronograma_asistencial.sql</strong> en Supabase (SQL Editor).</> : "Pídele al Maestro de tu servicio que lo active."}
+      </div>
+    );
+  }
+  if (error) return <p className="text-[13px]" style={{ color: T.danger }}>No se pudo cargar el cronograma asistencial: {error}</p>;
+
+  const horarioDe = (pid) => horarios[pid] || null;
+  const tipoPorId = Object.fromEntries(tipos.map((t) => [t.id, t]));
+  // Para la grilla del mes visible.
+  const turnosLiqMes = turnosParaLiquidacionAsistencial({ personas: asistenciales, horarios, turnosAsis, desde: toISO(diasMes[0]), hasta: toISO(diasMes[diasMes.length - 1]), festivoSet, novedades });
+  // Para la liquidación y el resumen (fechas de corte).
+  const turnosLiq = turnosParaLiquidacionAsistencial({ personas: asistenciales, horarios, turnosAsis, desde, hasta, festivoSet, novedades });
+  const etiquetaPeriodo = usarRango
+    ? `${new Date(`${rangoDesde}T00:00:00`).toLocaleDateString("es-CO", { day: "numeric", month: "short" })} – ${new Date(`${rangoHasta}T00:00:00`).toLocaleDateString("es-CO", { day: "numeric", month: "short" })}`
+    : `${MES_LABEL[base.getMonth()]} ${base.getFullYear()}`;
+  const notaPorPersona = (p) => {
+    const h = horarioDe(p.id);
+    if (!h || h.modo !== "fijo") return null;
+    const n = diasHabilesDe(p.id, turnosLiq, desde, hasta);
+    return `Horario fijo: ${n} día${n === 1 ? "" : "s"} hábil${n === 1 ? "" : "es"} × ${fmtH(h.horasDia)} h (${fmtHour(h.horaInicio)} – ${fmtHour(h.horaInicio + h.horasDia)}), descontando festivos y novedades.`;
+  };
+  const miFicha = session?.id ? asistenciales.find((p) => p.usuarioId && p.usuarioId === session.id) : null;
+
+  const resumen = asistenciales.map((p) => {
+    const suyos = turnosLiq.filter((t) => t.personalId === p.id && t.date >= desde && t.date <= hasta);
+    return {
+      p,
+      dias: suyos.filter((t) => t.fijo).length,
+      turnos: suyos.filter((t) => !t.fijo).length,
+      horas: suyos.reduce((a, t) => a + (t.end - t.start), 0),
+    };
+  });
+
+  return (
+    <div className="flex flex-col gap-4">
+      <ReadOnlyBanner isMaestro={isMaestro} />
+      <div className="flex items-start gap-2 px-3.5 py-2.5 rounded-lg text-[12.5px] max-w-3xl" style={{ background: T.primarySoft, color: T.primaryDark }}>
+        <HeartPulse size={14} className="shrink-0 mt-0.5" />
+        <span>
+          Cronograma del personal asistencial: todos los cargos que <strong>no</strong> están en "Cargos habilitados para turnos" de Configuración.
+          Es independiente del cronograma operativo: no cuenta para sus mínimos, alertas ni generador automático.
+        </span>
+      </div>
+
+      {asistenciales.length === 0 && (
+        <div className="ev-card p-5 text-[13px] max-w-3xl" style={{ color: T.muted }}>
+          No hay personal asistencial activo en este servicio. Regístralo en Personal (por ejemplo: médico, jefe de enfermería, psicólogo, terapeuta).
+        </div>
+      )}
+
+      {isMaestro && asistenciales.length > 0 && (
+        <div className="ev-card overflow-hidden max-w-5xl">
+          <button onClick={() => setConfigAbierta((v) => !v)} className="w-full flex items-center justify-between px-4 py-3 text-left">
+            <span>
+              <span className="ev-display font-semibold text-[13.5px] flex items-center gap-1.5"><Settings size={14} /> Horarios y tipos de turno de {ctx.servicioActual?.nombre || "este servicio"}</span>
+              <span className="block text-[11.5px]" style={{ color: T.muted }}>
+                {tipos.length} tipo{tipos.length === 1 ? "" : "s"} de turno · {asistenciales.filter((p) => horarioDe(p.id)?.modo === "fijo").length} persona(s) con horario fijo
+              </span>
+            </span>
+            <ChevronDown size={16} style={{ color: T.muted, transform: configAbierta ? "rotate(180deg)" : "none", transition: "transform .2s" }} />
+          </button>
+          {configAbierta && (
+            <div className="border-t p-4 flex flex-col gap-6" style={{ borderColor: T.border }}>
+              <TiposTurnoAsistencialConfig ctx={ctx} tipos={tipos} recargar={recargar} />
+              <HorariosAsistencialConfig ctx={ctx} personas={asistenciales} horarios={horarios} recargar={recargar} />
+            </div>
+          )}
+        </div>
+      )}
+
+      {asistenciales.length > 0 && (
+        <div className="ev-card overflow-hidden">
+          <div className="flex items-center justify-between px-4 py-3 border-b" style={{ borderColor: T.border }}>
+            <button className="p-1.5 rounded-lg no-print" style={{ border: `1px solid ${T.border}` }} onClick={() => setMesOffset((m) => m - 1)}><ChevronLeft size={16} /></button>
+            <p className="ev-display font-semibold text-[14px] capitalize">{MES_LABEL[base.getMonth()]} {base.getFullYear()}</p>
+            <button className="p-1.5 rounded-lg no-print" style={{ border: `1px solid ${T.border}` }} onClick={() => setMesOffset((m) => m + 1)}><ChevronRight size={16} /></button>
+          </div>
+          <div className="overflow-x-auto ev-scroll">
+            <table className="text-[11.5px] border-collapse" style={{ minWidth: 180 + diasMes.length * 44 }}>
+              <thead>
+                <tr>
+                  <th className="sticky left-0 z-10 text-left px-3 py-2 font-medium text-[11px] uppercase tracking-wide" style={{ background: T.surface, color: T.muted, minWidth: 180 }}>Profesional</th>
+                  {diasMes.map((d) => {
+                    const iso = toISO(d);
+                    const fest = festivoSet.has(iso);
+                    return (
+                      <th key={iso} className="px-0.5 py-1.5 font-medium text-center" style={{ color: d.getDay() === 0 || fest ? T.danger : T.muted, background: iso === todayISO ? T.primarySoft : fest ? T.accentSoft : "transparent", width: 44 }}>
+                        <span className="block text-[9.5px] uppercase">{DIA_LABEL[(d.getDay() + 6) % 7].slice(0, 2)}</span>
+                        <span className="block text-[12px] font-semibold" style={{ color: iso === todayISO ? T.primary : undefined }}>{d.getDate()}</span>
+                      </th>
+                    );
+                  })}
+                </tr>
+              </thead>
+              <tbody>
+                {asistenciales.map((p) => {
+                  const h = horarioDe(p.id);
+                  return (
+                    <tr key={p.id} className="border-t" style={{ borderColor: T.border }}>
+                      <td className="sticky left-0 z-10 px-3 py-1.5" style={{ background: T.surface }}>
+                        <p className="font-semibold text-[12.5px] truncate" style={{ maxWidth: 170 }}>{p.nombre}</p>
+                        <p className="text-[10.5px] truncate" style={{ color: T.muted, maxWidth: 170 }}>
+                          {p.cargo} · {h ? (h.modo === "fijo" ? `Fijo ${fmtHour(h.horaInicio)}–${fmtHour(h.horaInicio + h.horasDia)}` : "Por turnos") : "Sin horario"}
+                        </p>
+                      </td>
+                      {diasMes.map((d) => {
+                        const iso = toISO(d);
+                        const fest = festivoSet.has(iso);
+                        const ausente = estaAusente(p.id, iso, novedades);
+                        const delDia = turnosLiqMes.filter((t) => t.personalId === p.id && t.date === iso);
+                        return (
+                          <td
+                            key={iso}
+                            onClick={() => isMaestro && setCelda({ persona: p, fecha: iso })}
+                            className={`border-l align-top p-0.5 ${isMaestro ? "cursor-pointer hover:bg-black/[0.03]" : ""}`}
+                            style={{ borderColor: T.border, background: fest ? T.accentSoft : "transparent", height: 46 }}
+                            title={fest ? festivos.find((f) => f.fecha === iso)?.nombre : undefined}
+                          >
+                            {ausente && <span className="block rounded text-[9.5px] font-semibold text-center py-0.5 mb-0.5" style={{ background: T.dangerSoft, color: T.danger }}>Aus.</span>}
+                            {delDia.map((t) => {
+                              const tipo = t.tipoId ? tipoPorId[t.tipoId] : null;
+                              return (
+                                <span
+                                  key={t.id}
+                                  className="block rounded text-[9.5px] leading-tight text-center py-0.5 mb-0.5 truncate"
+                                  style={t.fijo
+                                    ? { background: T.base, color: T.muted, border: `1px solid ${T.border}` }
+                                    : { background: T.primarySoft, color: T.primaryDark, fontWeight: 600 }}
+                                  title={`${tipo ? tipo.nombre + " · " : ""}${fmtRange(t.start, t.end)} · ${fmtH(t.end - t.start)} h`}
+                                >
+                                  {t.fijo ? `${fmtH(t.end - t.start)}h` : tipo ? tipo.nombre : `${fmtHour(t.start).slice(0, 2)}·${fmtH(t.end - t.start)}h`}
+                                </span>
+                              );
+                            })}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div className="flex items-center gap-3 flex-wrap px-4 py-2 text-[11px] border-t" style={{ borderColor: T.border, color: T.muted }}>
+            <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ background: T.base, border: `1px solid ${T.border}` }} /> Horario fijo</span>
+            <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ background: T.primarySoft }} /> Turno</span>
+            <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ background: T.accentSoft }} /> Festivo</span>
+            <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ background: T.dangerSoft }} /> Novedad (no cuenta el horario fijo)</span>
+            {isMaestro && <span>· Toca una casilla para agregar o quitar turnos.</span>}
+          </div>
+        </div>
+      )}
+
+      {asistenciales.length > 0 && (
+        <div className="ev-card p-4 max-w-3xl">
+          <label className="flex items-center gap-2 text-[13px] font-medium mb-1">
+            <input type="checkbox" checked={usarRango} onChange={(e) => setUsarRango(e.target.checked)} />
+            Usar fechas de corte personalizadas para el resumen y la liquidación
+          </label>
+          {usarRango && (
+            <div className="grid grid-cols-2 gap-3 mt-2 max-w-sm">
+              <Field label="Desde"><input type="date" value={rangoDesde} onChange={(e) => setRangoDesde(e.target.value)} style={inputStyle} /></Field>
+              <Field label="Hasta"><input type="date" value={rangoHasta} min={rangoDesde} onChange={(e) => setRangoHasta(e.target.value)} style={inputStyle} /></Field>
+            </div>
+          )}
+        </div>
+      )}
+
+      {asistenciales.length > 0 && (
+        <div className="ev-card overflow-hidden max-w-3xl">
+          <div className="px-4 py-3 border-b" style={{ borderColor: T.border }}>
+            <h3 className="ev-display font-semibold text-[13.5px]">Resumen asistencial · {etiquetaPeriodo}</h3>
+            <p className="text-[11.5px]" style={{ color: T.muted }}>Días de horario fijo (sin festivos ni novedades), turnos asignados y horas totales del periodo.</p>
+          </div>
+          <div className="overflow-x-auto ev-scroll">
+            <table className="w-full text-[13px]">
+              <thead>
+                <tr className="text-left" style={{ color: T.muted }}>
+                  <th className="px-4 py-2 font-medium text-[12px] uppercase tracking-wide">Profesional</th>
+                  <th className="px-3 py-2 font-medium text-[12px] uppercase tracking-wide text-right">Días fijos</th>
+                  <th className="px-3 py-2 font-medium text-[12px] uppercase tracking-wide text-right">Turnos</th>
+                  <th className="px-3 py-2 font-medium text-[12px] uppercase tracking-wide text-right">Horas</th>
+                </tr>
+              </thead>
+              <tbody>
+                {resumen.map(({ p, dias, turnos, horas }) => (
+                  <tr key={p.id} className="border-t" style={{ borderColor: T.border }}>
+                    <td className="px-4 py-2 font-medium">{p.nombre} <span className="text-[11px] font-normal" style={{ color: T.muted }}>· {p.cargo}</span></td>
+                    <td className="px-3 py-2 text-right ev-mono" style={{ color: T.muted }}>{dias}</td>
+                    <td className="px-3 py-2 text-right ev-mono" style={{ color: T.muted }}>{turnos}</td>
+                    <td className="px-3 py-2 text-right ev-mono">{fmtH(horas)}h</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {isMaestro && asistenciales.length > 0 && (
+        <LiquidacionPanel
+          ctx={ctx} turnos={turnosLiq} personas={asistenciales}
+          filtroPersonal={filtroLiq} setFiltroPersonal={setFiltroLiq}
+          desde={desde} hasta={hasta} festivoSet={festivoSet}
+          etiquetaPeriodo={`${etiquetaPeriodo} · asistencial`}
+          notaPorPersona={notaPorPersona}
+        />
+      )}
+      {!isMaestro && miFicha && (
+        <LiquidacionPanel
+          soloPropia
+          ctx={ctx} turnos={turnosLiq} personas={[miFicha]}
+          filtroPersonal={miFicha.id} setFiltroPersonal={() => {}}
+          desde={desde} hasta={hasta} festivoSet={festivoSet}
+          etiquetaPeriodo={etiquetaPeriodo}
+          notaPorPersona={notaPorPersona}
+        />
+      )}
+
+      {celda && (
+        <TurnoAsistencialModal
+          ctx={ctx} persona={celda.persona} fecha={celda.fecha} tipos={tipos}
+          turnosDelDia={turnosAsis.filter((t) => t.personalId === celda.persona.id && t.fecha === celda.fecha)}
+          horario={horarioDe(celda.persona.id)} festivo={festivoSet.has(celda.fecha)}
+          onClose={() => setCelda(null)} recargar={recargar}
+        />
+      )}
+    </div>
+  );
+}
+
+function TiposTurnoAsistencialConfig({ ctx, tipos, recargar }) {
+  const { servicioActualId, showToast } = ctx;
+  const [form, setForm] = useState({ nombre: "", inicio: "07:00", horas: 12 });
+  const [guardando, setGuardando] = useState(false);
+  async function agregar() {
+    if (!form.nombre.trim() || !(Number(form.horas) > 0)) return;
+    setGuardando(true);
+    try {
+      await sb("asistencial_tipos_turno", { method: "POST", prefer: "return=minimal", body: JSON.stringify({ servicio_id: servicioActualId, nombre: form.nombre.trim(), hora_inicio: timeValueAHora(form.inicio), horas: Number(form.horas) }) });
+      setForm({ nombre: "", inicio: form.inicio, horas: form.horas });
+      await recargar();
+      showToast("Tipo de turno agregado");
+    } catch (e) {
+      showToast(`No se pudo guardar: ${e.message}`, "warn");
+    } finally {
+      setGuardando(false);
+    }
+  }
+  async function borrar(t) {
+    if (!window.confirm(`¿Eliminar el tipo "${t.nombre}"? Los turnos ya asignados se conservan con su horario.`)) return;
+    try {
+      await sb(`asistencial_tipos_turno?id=eq.${t.id}`, { method: "DELETE", prefer: "return=minimal" });
+      await recargar();
+      showToast("Tipo de turno eliminado", "warn");
+    } catch (e) {
+      showToast(`No se pudo eliminar: ${e.message}`, "warn");
+    }
+  }
+  return (
+    <div>
+      <p className="text-[12px] font-semibold uppercase tracking-wide mb-1" style={{ color: T.muted }}>Tipos de turno del servicio</p>
+      <p className="text-[11.5px] mb-3" style={{ color: T.muted }}>Los turnos típicos de este servicio (cada servicio tiene los suyos). Ej.: "Día" 07:00 · 12 h, "Noche" 19:00 · 12 h, "24 h" 07:00 · 24 h.</p>
+      <div className="flex flex-wrap gap-2 mb-3">
+        {tipos.map((t) => (
+          <span key={t.id} className="flex items-center gap-2 pl-3 pr-1.5 py-1.5 rounded-lg text-[12.5px]" style={{ background: T.primarySoft, color: T.primaryDark }}>
+            <strong>{t.nombre}</strong>
+            <span className="ev-mono text-[11.5px]">{fmtRange(t.horaInicio, t.horaInicio + t.horas)} · {fmtH(t.horas)} h</span>
+            <button onClick={() => borrar(t)} title="Eliminar" style={{ color: T.muted }}><X size={13} /></button>
+          </span>
+        ))}
+        {tipos.length === 0 && <span className="text-[12.5px]" style={{ color: T.muted }}>Aún no hay tipos de turno.</span>}
+      </div>
+      <div className="flex flex-wrap items-end gap-2">
+        <div style={{ width: 170 }}><Field label="Nombre"><input value={form.nombre} onChange={(e) => setForm((f) => ({ ...f, nombre: e.target.value }))} placeholder="Ej. Día" style={inputStyle} /></Field></div>
+        <div style={{ width: 130 }}><Field label="Hora de inicio"><input type="time" value={form.inicio} onChange={(e) => setForm((f) => ({ ...f, inicio: e.target.value }))} style={inputStyle} /></Field></div>
+        <div style={{ width: 100 }}><Field label="Horas"><input type="number" min={0.5} max={36} step={0.5} value={form.horas} onChange={(e) => setForm((f) => ({ ...f, horas: e.target.value }))} style={inputStyle} /></Field></div>
+        <button onClick={agregar} disabled={guardando || !form.nombre.trim()} className="ev-btn px-3.5 py-2.5 text-[12.5px] text-white disabled:opacity-40" style={{ background: T.primary }}>
+          <Plus size={14} /> Agregar tipo
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function HorariosAsistencialConfig({ ctx, personas, horarios, recargar }) {
+  const { servicioActualId, showToast } = ctx;
+  const [filas, setFilas] = useState({});
+  const [guardando, setGuardando] = useState(false);
+  React.useEffect(() => { setFilas(JSON.parse(JSON.stringify(horarios))); }, [horarios]);
+  const fila = (id) => filas[id] || { ...HORARIO_DEFAULT, modo: "turnos" };
+  const setFila = (id, patch) => setFilas((f) => ({ ...f, [id]: { ...fila(id), ...patch } }));
+  async function guardar() {
+    setGuardando(true);
+    try {
+      const cuerpo = personas.map((p) => {
+        const f = fila(p.id);
+        return {
+          personal_id: p.id, servicio_id: servicioActualId, modo: f.modo,
+          dias: [...new Set(f.dias)].sort(), hora_inicio: Number(f.horaInicio) || 0, horas_dia: Number(f.horasDia) || 8,
+          updated_at: new Date().toISOString(),
+        };
+      });
+      if (cuerpo.length) await sb("asistencial_horario", { method: "POST", body: JSON.stringify(cuerpo), prefer: "resolution=merge-duplicates,return=minimal" });
+      await recargar();
+      showToast("Horarios guardados");
+    } catch (e) {
+      showToast(`No se pudo guardar: ${e.message}`, "warn");
+    } finally {
+      setGuardando(false);
+    }
+  }
+  return (
+    <div>
+      <p className="text-[12px] font-semibold uppercase tracking-wide mb-1" style={{ color: T.muted }}>Horario de cada profesional</p>
+      <p className="text-[11.5px] mb-3" style={{ color: T.muted }}>
+        <strong>Horario fijo</strong>: horario de oficina (psicólogos, terapeutas, administrativos); se repite solo cada día marcado, sin festivos ni novedades.
+        {" "}<strong>Por turnos</strong>: médicos, jefes de enfermería… se asignan tocando las casillas del cronograma. A ambos se les pueden sumar turnos puntuales.
+      </p>
+      <div className="overflow-x-auto ev-scroll">
+        <table className="w-full text-[13px]">
+          <thead>
+            <tr className="text-left" style={{ color: T.muted }}>
+              <th className="py-1.5 pr-3 font-medium text-[12px]">Profesional</th>
+              <th className="py-1.5 pr-3 font-medium text-[12px]">Modo</th>
+              <th className="py-1.5 pr-3 font-medium text-[12px]">Días</th>
+              <th className="py-1.5 pr-3 font-medium text-[12px]">Inicio</th>
+              <th className="py-1.5 font-medium text-[12px]">Horas/día</th>
+            </tr>
+          </thead>
+          <tbody>
+            {personas.map((p) => {
+              const f = fila(p.id);
+              const fijo = f.modo === "fijo";
+              return (
+                <tr key={p.id} className="border-t" style={{ borderColor: T.border }}>
+                  <td className="py-2 pr-3"><span className="font-medium">{p.nombre}</span><span className="block text-[11px]" style={{ color: T.muted }}>{p.cargo}</span></td>
+                  <td className="py-2 pr-3">
+                    <select value={f.modo} onChange={(e) => setFila(p.id, { modo: e.target.value })} style={{ ...inputStyle, padding: "6px 10px", width: 140 }}>
+                      <option value="fijo">Horario fijo</option>
+                      <option value="turnos">Por turnos</option>
+                    </select>
+                  </td>
+                  <td className="py-2 pr-3">
+                    <div className="flex gap-1" style={{ opacity: fijo ? 1 : 0.4 }}>
+                      {DIA_LABEL.map((label, idx) => {
+                        const on = f.dias.includes(idx);
+                        return (
+                          <button
+                            key={idx} type="button" disabled={!fijo}
+                            onClick={() => setFila(p.id, { dias: on ? f.dias.filter((d) => d !== idx) : [...f.dias, idx] })}
+                            className="w-8 py-1 rounded-md text-[11px] font-semibold"
+                            style={{ background: on ? T.primary : "transparent", color: on ? "#fff" : T.muted, border: `1px solid ${on ? T.primary : T.border}` }}
+                          >
+                            {label.slice(0, 2)}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </td>
+                  <td className="py-2 pr-3"><input type="time" disabled={!fijo} value={horaATimeValue(f.horaInicio)} onChange={(e) => setFila(p.id, { horaInicio: timeValueAHora(e.target.value) })} style={{ ...inputStyle, padding: "6px 10px", width: 110, opacity: fijo ? 1 : 0.5 }} /></td>
+                  <td className="py-2"><input type="number" min={0.5} max={24} step={0.5} disabled={!fijo} value={f.horasDia} onChange={(e) => setFila(p.id, { horasDia: e.target.value })} style={{ ...inputStyle, padding: "6px 10px", width: 80, opacity: fijo ? 1 : 0.5 }} /></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <button onClick={guardar} disabled={guardando} className="ev-btn mt-3 px-4 py-2 text-[13px] text-white disabled:opacity-60" style={{ background: T.primary }}>
+        {guardando ? "Guardando…" : "Guardar horarios"}
+      </button>
+    </div>
+  );
+}
+
+function TurnoAsistencialModal({ ctx, persona, fecha, tipos, turnosDelDia, horario, festivo, onClose, recargar }) {
+  const { servicioActualId, showToast } = ctx;
+  const [tipoId, setTipoId] = useState(tipos[0]?.id || "personalizado");
+  const [inicio, setInicio] = useState("07:00");
+  const [horas, setHoras] = useState(12);
+  const [repetirHasta, setRepetirHasta] = useState("");
+  const [guardando, setGuardando] = useState(false);
+  const tipo = tipos.find((t) => t.id === tipoId);
+  const hIni = tipo ? tipo.horaInicio : timeValueAHora(inicio);
+  const hDur = tipo ? tipo.horas : Number(horas) || 0;
+  const fechaLargaTxt = new Date(`${fecha}T00:00:00`).toLocaleDateString("es-CO", { weekday: "long", day: "numeric", month: "long" });
+
+  async function agregar() {
+    if (!(hDur > 0)) return;
+    setGuardando(true);
+    try {
+      // Opcional: repetir el mismo turno cada día hasta una fecha (ej. una semana de turnos).
+      const fechas = [fecha];
+      if (repetirHasta && repetirHasta > fecha) {
+        for (let d = addDays(new Date(`${fecha}T00:00:00`), 1); toISO(d) <= repetirHasta; d = addDays(d, 1)) fechas.push(toISO(d));
+      }
+      const cuerpo = fechas.map((f) => ({
+        servicio_id: servicioActualId, personal_id: persona.id, fecha: f,
+        hora_inicio: hIni, hora_fin: hIni + hDur, tipo_id: tipo ? tipo.id : null,
+      }));
+      await sb("asistencial_turnos", { method: "POST", prefer: "return=minimal", body: JSON.stringify(cuerpo) });
+      await recargar();
+      showToast(fechas.length > 1 ? `${fechas.length} turnos asignados` : "Turno asignado");
+      onClose();
+    } catch (e) {
+      showToast(`No se pudo guardar: ${e.message}`, "warn");
+    } finally {
+      setGuardando(false);
+    }
+  }
+  async function quitar(t) {
+    try {
+      await sb(`asistencial_turnos?id=eq.${t.id}`, { method: "DELETE", prefer: "return=minimal" });
+      await recargar();
+      showToast("Turno eliminado", "warn");
+    } catch (e) {
+      showToast(`No se pudo eliminar: ${e.message}`, "warn");
+    }
+  }
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="ev-card w-full max-w-md p-5 max-h-[90vh] overflow-y-auto ev-scroll">
+        <div className="flex items-start justify-between mb-4 gap-3">
+          <div>
+            <h3 className="ev-display font-semibold text-[16px]">{persona.nombre}</h3>
+            <p className="text-[12.5px] capitalize" style={{ color: T.muted }}>{fechaLargaTxt}{festivo ? " · festivo" : ""}</p>
+          </div>
+          <button onClick={onClose}><X size={18} /></button>
+        </div>
+        {horario?.modo === "fijo" && (
+          <p className="text-[12px] mb-3 px-3 py-2 rounded-lg" style={{ background: T.base, color: T.muted }}>
+            Tiene horario fijo {fmtHour(horario.horaInicio)}–{fmtHour(horario.horaInicio + horario.horasDia)}. Lo que agregues aquí se suma como turno adicional.
+          </p>
+        )}
+        {turnosDelDia.length > 0 && (
+          <div className="mb-4">
+            <p className="text-[12px] font-semibold mb-1.5" style={{ color: T.muted }}>Turnos de este día</p>
+            {turnosDelDia.map((t) => (
+              <div key={t.id} className="flex items-center justify-between px-3 py-2 rounded-lg mb-1.5" style={{ background: T.primarySoft }}>
+                <span className="text-[13px]" style={{ color: T.primaryDark }}>
+                  <strong>{tipos.find((x) => x.id === t.tipoId)?.nombre || "Turno"}</strong> · <span className="ev-mono">{fmtRange(t.start, t.end)}</span> · {fmtH(t.end - t.start)} h
+                </span>
+                <button onClick={() => quitar(t)} className="flex items-center gap-1 text-[12px]" style={{ color: T.danger }}><Trash2 size={13} /> Quitar</button>
+              </div>
+            ))}
+          </div>
+        )}
+        <p className="text-[12px] font-semibold mb-2" style={{ color: T.muted }}>Agregar turno</p>
+        <div className="flex flex-col gap-3">
+          <Field label="Tipo de turno">
+            <select value={tipoId} onChange={(e) => setTipoId(e.target.value)} style={inputStyle}>
+              {tipos.map((t) => <option key={t.id} value={t.id}>{t.nombre} · {fmtRange(t.horaInicio, t.horaInicio + t.horas)} ({fmtH(t.horas)} h)</option>)}
+              <option value="personalizado">Personalizado…</option>
+            </select>
+          </Field>
+          {!tipo && (
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Hora de inicio"><input type="time" value={inicio} onChange={(e) => setInicio(e.target.value)} style={inputStyle} /></Field>
+              <Field label="Horas"><input type="number" min={0.5} max={36} step={0.5} value={horas} onChange={(e) => setHoras(e.target.value)} style={inputStyle} /></Field>
+            </div>
+          )}
+          <Field label="Repetir cada día hasta (opcional)">
+            <input type="date" value={repetirHasta} min={fecha} onChange={(e) => setRepetirHasta(e.target.value)} style={inputStyle} />
+          </Field>
+          <p className="text-[11.5px]" style={{ color: T.muted }}>
+            Quedará {fmtRange(hIni, hIni + hDur)} ({fmtH(hDur)} h). Los recargos nocturnos y dominicales se calculan solos en la liquidación.
+          </p>
+        </div>
+        <div className="flex justify-end gap-2 mt-5">
+          <button onClick={onClose} className="ev-btn px-4 py-2 text-[13px]" style={{ border: `1px solid ${T.border}` }}>Cerrar</button>
+          <button onClick={agregar} disabled={guardando || !(hDur > 0)} className="ev-btn px-4 py-2 text-[13px] text-white disabled:opacity-40" style={{ background: T.primary }}>
+            {guardando ? "Guardando…" : "Asignar turno"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TurnosCalendario({ ctx }) {
   const { isMaestro, events, personal, monthOffset, setMonthOffset, setDetail, reglas, festivos, novedades, turnosExtra } = ctx;
   const turnos = events.filter((e) => TURNO_TYPES.includes(e.type));
   const festivoSet = new Set((festivos || []).map((f) => f.fecha));
   const elegibles = personal.filter((p) => esCargoDeTurno(p.cargo, reglas?.cargosTurno));
   const [generarOpen, setGenerarOpen] = useState(false);
-  // Ficha de Personal vinculada a la cuenta que inició sesión (para "Mi liquidación").
-  const miFicha = ctx.session?.id ? personal.find((p) => p.usuarioId && p.usuarioId === ctx.session.id) : null;
-
   const baseParaResumen = elegibles.length > 0 ? elegibles : personal;
+  // Ficha de Personal vinculada a la cuenta que inició sesión (para "Mi liquidación"),
+  // solo si pertenece a este cronograma operativo.
+  const miFicha = ctx.session?.id ? baseParaResumen.find((p) => p.usuarioId && p.usuarioId === ctx.session.id) : null;
 
   const base = new Date(TODAY.getFullYear(), TODAY.getMonth() + monthOffset, 1);
   const gridStart = getMonday(new Date(base.getFullYear(), base.getMonth(), 1));
