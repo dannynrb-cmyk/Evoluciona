@@ -1,3 +1,4 @@
+import { estadoLicencia } from "../../../lib/licencia";
 // Vercel la llama automáticamente una vez al día (ver vercel.json). Revisa
 // los turnos de "mañana" en TODOS los servicios, y le escribe por Telegram
 // a cada persona que ya vinculó su cuenta. Cada ejecución (automática o
@@ -72,7 +73,23 @@ export async function GET(request) {
       `${SUPABASE_URL}/rest/v1/turnos?select=*&fecha=eq.${fecha}&personal_id=not.is.null`,
       { headers }
     );
-    const turnos = turnosRes.ok ? await turnosRes.json() : [];
+    const turnosTodos = turnosRes.ok ? await turnosRes.json() : [];
+
+    // Solo servicios activos, con la función Turnos encendida y cuya
+    // institución no tenga la licencia bloqueada.
+    const [servRes, licRes] = await Promise.all([
+      fetch(`${SUPABASE_URL}/rest/v1/servicios?select=id,institucion_id,activo,modulos`, { headers }),
+      fetch(`${SUPABASE_URL}/rest/v1/licencias?select=*`, { headers }),
+    ]);
+    const serviciosLista = servRes.ok ? await servRes.json() : null;
+    const licencias = licRes.ok ? await licRes.json() : [];
+    const licenciaDe = Object.fromEntries(licencias.map((l) => [l.institucion_id, l]));
+    const serviciosOk = serviciosLista
+      ? new Set(serviciosLista
+          .filter((sv) => sv.activo !== false && sv.modulos?.turnos !== false && estadoLicencia(licenciaDe[sv.institucion_id]) !== "bloqueada")
+          .map((sv) => sv.id))
+      : null; // si la consulta falla, no se filtra (mejor avisar de más que de menos)
+    const turnos = serviciosOk ? turnosTodos.filter((t) => serviciosOk.has(t.servicio_id)) : turnosTodos;
     if (turnos.length === 0) {
       const resultado = { ok: true, fecha, enviados: 0, mensaje: "No hay turnos asignados para mañana." };
       await registrarEjecucion(SERVICE_KEY, resultado);

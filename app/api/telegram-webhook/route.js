@@ -37,30 +37,58 @@ export async function POST(request) {
       return Response.json({ ok: true }); // nada que hacer (ej. un "sticker" o similar)
     }
 
-    // Si el mensaje viene de un grupo (no de un chat privado), se registra
-    // como "grupo detectado" para poder vincularlo desde Configuración —
-    // sin importar qué haya escrito, cualquier mensaje sirve para detectarlo.
+    // Mensajes desde un GRUPO: cada servicio vincula su propio grupo escribiendo
+    // ahí "/vincular CODIGO" (el código lo genera un Maestro en Configuración).
+    // Cualquier otro mensaje del grupo se ignora: el bot no lee conversaciones.
     if (mensaje.chat.type === "group" || mensaje.chat.type === "supergroup") {
       const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-      const headers = { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`, "Content-Type": "application/json", Prefer: "resolution=merge-duplicates" };
-      try {
-        const filaRes = await fetch(`${SUPABASE_URL}/rest/v1/configuracion_notificaciones?select=id,telegram_grupo_chat_id,telegram_grupo_confirmado&limit=1`, { headers });
-        const filas = filaRes.ok ? await filaRes.json() : [];
-        if (filas[0]) {
-          await fetch(`${SUPABASE_URL}/rest/v1/configuracion_notificaciones?id=eq.${filas[0].id}`, {
-            method: "PATCH",
-            headers,
-            body: JSON.stringify({
-              telegram_grupo_chat_id: String(mensaje.chat.id),
-              telegram_grupo_nombre: mensaje.chat.title || "Grupo sin nombre",
-              telegram_grupo_detectado_en: new Date().toISOString(),
-              // Si el chat_id cambia (ej. se probó con otro grupo), se pierde la confirmación anterior.
-              telegram_grupo_confirmado: filas[0].telegram_grupo_chat_id === String(mensaje.chat.id) ? filas[0].telegram_grupo_confirmado : false,
-            }),
+      const headers = { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`, "Content-Type": "application/json" };
+
+      // Telegram cambia el número del grupo cuando este se convierte en
+      // "supergrupo" (pasa solo al crecer o al activar ciertas opciones).
+      if (mensaje.migrate_to_chat_id) {
+        try {
+          await fetch(`${SUPABASE_URL}/rest/v1/servicio_telegram?chat_id=eq.${encodeURIComponent(String(mensaje.chat.id))}`, {
+            method: "PATCH", headers, body: JSON.stringify({ chat_id: String(mensaje.migrate_to_chat_id) }),
           });
+        } catch (err) {
+          console.error("Telegram webhook: fallo actualizando grupo migrado ->", err);
         }
+        return Response.json({ ok: true });
+      }
+
+      const textoGrupo = (mensaje.text || "").trim();
+      const coincide = textoGrupo.match(/^\/vincular(?:@\w+)?\s+([A-Za-z0-9]{4,12})\s*$/i);
+      if (!coincide) return Response.json({ ok: true });
+
+      const codigoGrupo = coincide[1].toUpperCase();
+      try {
+        const res = await fetch(
+          `${SUPABASE_URL}/rest/v1/servicio_telegram?codigo=eq.${encodeURIComponent(codigoGrupo)}&select=servicio_id,codigo_expira,servicios(nombre,instituciones(nombre))`,
+          { headers }
+        );
+        const fila = (res.ok ? await res.json() : [])[0];
+        if (!fila || (fila.codigo_expira && new Date(fila.codigo_expira) < new Date())) {
+          await enviarMensaje(mensaje.chat.id, "Ese código no es válido o ya venció. Genera uno nuevo en Evoluciona (Configuración → Grupo de Telegram del servicio).");
+          return Response.json({ ok: true });
+        }
+        await fetch(`${SUPABASE_URL}/rest/v1/servicio_telegram?servicio_id=eq.${fila.servicio_id}`, {
+          method: "PATCH",
+          headers,
+          body: JSON.stringify({
+            chat_id: String(mensaje.chat.id),
+            chat_nombre: mensaje.chat.title || "Grupo sin nombre",
+            vinculado_en: new Date().toISOString(),
+            codigo: null,
+            codigo_expira: null,
+          }),
+        });
+        const servicioNombre = fila.servicios?.nombre || "el servicio";
+        const institucionNombre = fila.servicios?.instituciones?.nombre;
+        await enviarMensaje(mensaje.chat.id, `✅ Listo. Este grupo quedó vinculado a ${servicioNombre}${institucionNombre ? ` (${institucionNombre})` : ""} en Evoluciona. Aquí llegarán los avisos del tablero de ese servicio.`);
       } catch (err) {
-        console.error("Telegram webhook: fallo detectando grupo ->", err);
+        console.error("Telegram webhook: fallo vinculando grupo ->", err);
+        await enviarMensaje(mensaje.chat.id, "Hubo un problema técnico vinculando el grupo. Intenta de nuevo en unos minutos.");
       }
       return Response.json({ ok: true });
     }

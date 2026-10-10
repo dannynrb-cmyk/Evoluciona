@@ -1,4 +1,5 @@
 import { verificarAcceso } from "../../../lib/acceso";
+import { estadoLicencia } from "../../../lib/licencia";
 // Ruta de servidor (nunca se ejecuta en el navegador) para el asistente "Evo".
 // Aquí es seguro usar la llave de servicio de Supabase y la llave de Gemini,
 // porque este archivo nunca se envía al cliente — solo vive en Vercel.
@@ -63,7 +64,15 @@ export async function POST(request) {
     const formUrl = servicio?.institucion_id
       ? `${SUPABASE_URL}/rest/v1/formacion_continua?select=*&or=(servicio_id.eq.${servicioId},and(servicio_id.is.null,institucion_id.eq.${servicio.institucion_id}))`
       : `${SUPABASE_URL}/rest/v1/formacion_continua?select=*`;
-    if (servicio?.modulos && servicio.modulos.evo === false) {
+    // Licencia de la institución: bloqueada → sin Evo; funciones no incluidas → sin Evo.
+    const licRes = servicio?.institucion_id
+      ? await fetch(`${SUPABASE_URL}/rest/v1/licencias?institucion_id=eq.${servicio.institucion_id}&select=*`, { headers })
+      : null;
+    const licencia = licRes && licRes.ok ? (await licRes.json())[0] : null;
+    if (!acceso.esSuperadmin && estadoLicencia(licencia) === "bloqueada") {
+      return Response.json({ error: "La licencia de tu institución está vencida. Contacta al administrador." }, { status: 403 });
+    }
+    if ((servicio?.modulos && servicio.modulos.evo === false) || (licencia?.modulos && licencia.modulos.evo === false)) {
       return Response.json({ error: "Evo no está activado en este servicio." }, { status: 403 });
     }
 
@@ -99,13 +108,15 @@ export async function POST(request) {
     // "lea" directamente (más confiable que extraer el texto nosotros mismos,
     // y funciona igual con imágenes). Los videos no se adjuntan (archivos
     // pesados) — de esos Evo solo conoce título y descripción por ahora.
-    const candidatosArchivo = (formacion || []).filter((f) => ["infografia", "mapa_mental", "pdf"].includes(f.tipo) && f.archivo_url);
+    const candidatosArchivo = (formacion || []).filter((f) => ["infografia", "mapa_mental", "pdf"].includes(f.tipo) && f.archivo_path);
     const archivosAdjuntos = [];
     let bytesAcumulados = 0;
     for (const f of candidatosArchivo) {
       if (archivosAdjuntos.length >= MAX_ARCHIVOS_ADJUNTOS) break;
       try {
-        const fileRes = await fetch(f.archivo_url);
+        // Los archivos ya no son públicos: se descargan con la llave del servidor.
+        const ruta = f.archivo_path.split("/").map(encodeURIComponent).join("/");
+        const fileRes = await fetch(`${SUPABASE_URL}/storage/v1/object/formacion-continua/${ruta}`, { headers });
         if (!fileRes.ok) continue;
         const buf = Buffer.from(await fileRes.arrayBuffer());
         if (bytesAcumulados + buf.length > LIMITE_BYTES_ADJUNTOS) continue; // se acabó el cupo, pero seguimos probando con archivos más chicos

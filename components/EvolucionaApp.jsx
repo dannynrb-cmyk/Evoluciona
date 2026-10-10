@@ -53,6 +53,7 @@ import * as XLSX from "xlsx";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import html2canvas from "html2canvas";
+import { estadoLicencia, diasParaVencer, fechaBloqueoISO } from "../lib/licencia";
 
 /* ============================== LOGO ============================== */
 // "Cometa": un destello que deja una estela en espiral — progreso + continuidad.
@@ -667,6 +668,56 @@ async function actualizarServicioRemote(id, cambios) {
   const [row] = await sb(`servicios?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(cambios) });
   return mapServicio(row);
 }
+function mapLicencia(row) {
+  return {
+    institucionId: row.institucion_id, plan: row.plan || "", inicio: row.inicio || null, vence: row.vence || null,
+    maxPersonas: row.max_personas ?? null, maxServicios: row.max_servicios ?? null,
+    modulos: normalizarModulos(row.modulos), notas: row.notas || "",
+  };
+}
+// Devuelve null si la tabla "licencias" aún no existe (SQL de la etapa 3 sin correr).
+async function fetchLicencias() {
+  try {
+    const rows = await sb("licencias?select=*");
+    return rows.map(mapLicencia);
+  } catch (_) {
+    return null;
+  }
+}
+async function fetchMisLicencias() {
+  try {
+    return (await sb("rpc/mis_licencias", { method: "POST", body: "{}" })) || [];
+  } catch (_) {
+    return [];
+  }
+}
+// Fechas de la licencia en palabras: "31 de diciembre de 2026".
+function fechaLarga(iso) {
+  return iso ? new Date(`${iso}T00:00:00`).toLocaleDateString("es-CO", { day: "numeric", month: "long", year: "numeric" }) : "";
+}
+
+// Los archivos de Formación son privados (etapa 3): para mostrarlos se pide a
+// Supabase un enlace temporal (1 hora) que solo se entrega a quien pertenece
+// al servicio. Si el almacenamiento aún es público, se usa el enlace de siempre.
+const VIGENCIA_ENLACE_ARCHIVO = 3600;
+async function firmarArchivosFormacion(items) {
+  const conRuta = items.filter((f) => f.archivoPath);
+  if (conRuta.length === 0) return items;
+  try {
+    const res = await fetch(`${SUPABASE_URL}/storage/v1/object/sign/${FORMACION_BUCKET}`, {
+      method: "POST",
+      headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${ACCESS_TOKEN || SUPABASE_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ expiresIn: VIGENCIA_ENLACE_ARCHIVO, paths: conRuta.map((f) => f.archivoPath) }),
+    });
+    if (!res.ok) return items;
+    const firmas = await res.json();
+    const porRuta = Object.fromEntries((firmas || []).filter((x) => x.signedURL).map((x) => [x.path, `${SUPABASE_URL}/storage/v1${x.signedURL}`]));
+    return items.map((f) => (porRuta[f.archivoPath] ? { ...f, archivoUrl: porRuta[f.archivoPath] } : f));
+  } catch (_) {
+    return items;
+  }
+}
+
 function mapInstitucion(row) {
   return { id: row.id, nombre: row.nombre, activa: row.activa !== false, createdAt: row.created_at };
 }
@@ -1190,6 +1241,8 @@ export default function EvolucionaApp() {
   }, []);
   const [servicios, setServicios] = useState([]);
   const [instituciones, setInstituciones] = useState([]);
+  const [licencias, setLicencias] = useState(null); // null = tabla aún no existe
+  const [misLicencias, setMisLicencias] = useState([]);
   const [misMiembros, setMisMiembros] = useState(null); // null = tabla "miembros" aún no existe
   const [servicioActualId, setServicioActualId] = useState(null);
   const [servicioModal, setServicioModal] = useState(false);
@@ -1233,6 +1286,8 @@ export default function EvolucionaApp() {
   const [temas, setTemas] = useState([]);
   const [temaModal, setTemaModal] = useState(false);
   const [formacion, setFormacion] = useState([]);
+  const formacionRef = React.useRef([]);
+  React.useEffect(() => { formacionRef.current = formacion; }, [formacion]);
   const [formacionModal, setFormacionModal] = useState(false);
   const [subiendoArchivo, setSubiendoArchivo] = useState(false);
   const [vistos, setVistos] = useState([]);
@@ -1264,24 +1319,41 @@ export default function EvolucionaApp() {
   const esSuperadmin = !!session?.esSuperadmin;
   const servicioActual = servicios.find((s) => s.id === servicioActualId) || null;
   const institucionActual = instituciones.find((i) => i.id === servicioActual?.institucionId) || null;
-  const modulos = servicioActual?.modulos || MODULOS_TODOS;
+  const licenciaActual = (licencias || []).find((l) => l.institucionId === servicioActual?.institucionId) || null;
+  const estadoLic = estadoLicencia(licenciaActual);
+  // Funciones visibles = las del servicio Y las incluidas en la licencia.
+  const modulosServicio = servicioActual?.modulos || MODULOS_TODOS;
+  const modulos = Object.fromEntries(MODULOS.map((m) => [m.key, modulosServicio[m.key] !== false && (!licenciaActual || licenciaActual.modulos[m.key] !== false)]));
   // Maestro se es POR SERVICIO. Si la tabla de miembros aún no existe, se usa el rol de antes.
   const rolEnServicio = misMiembros ? misMiembros.find((m) => m.servicioId === servicioActualId)?.rol : null;
-  const isMaestro = esSuperadmin || (misMiembros ? rolEnServicio === "maestro" : session?.rol === "maestro");
+  const esMaestroDelServicio = misMiembros ? rolEnServicio === "maestro" : session?.rol === "maestro";
+  // Con la licencia vencida (solo lectura) nadie edita, salvo el superadmin.
+  const isMaestro = esSuperadmin || (esMaestroDelServicio && estadoLic !== "solo_lectura");
 
   React.useEffect(() => {
     PERSONAL_STATE = personal;
   }, [personal]);
+  React.useEffect(() => {
+    if (!session) return;
+    const id = setInterval(async () => {
+      setFormacion(await firmarArchivosFormacion(formacionRef.current));
+    }, 50 * 60 * 1000);
+    return () => clearInterval(id);
+  }, [session]);
 
   async function loadAll(forzarServicioId) {
     setLoading(true);
     setLoadError(null);
     try {
-      const [listaServicios, listaInstituciones, miembrosPropios] = await Promise.all([
+      const [listaServicios, listaInstituciones, miembrosPropios, listaLicencias, licenciasPropias] = await Promise.all([
         fetchServicios(),
         fetchInstituciones().catch(() => []),
         session?.id ? fetchMisMiembros(session.id) : Promise.resolve(null),
+        fetchLicencias(),
+        fetchMisLicencias(),
       ]);
+      setLicencias(listaLicencias);
+      setMisLicencias(licenciasPropias);
       setServicios(listaServicios);
       setInstituciones(listaInstituciones);
       setMisMiembros(miembrosPropios);
@@ -1321,7 +1393,7 @@ export default function EvolucionaApp() {
       setPlantillaItems(data.plantillaItems);
       setAvisos(data.avisos);
       setTemas(data.temas);
-      setFormacion(data.formacion);
+      setFormacion(await firmarArchivosFormacion(data.formacion));
       setVistos(data.vistos);
       setPreguntas(data.preguntas);
       setResultados(data.resultados);
@@ -1774,7 +1846,7 @@ export default function EvolucionaApp() {
       fetch("/api/telegram-avisar-grupo", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${ACCESS_TOKEN}` },
-        body: JSON.stringify({ titulo: saved.titulo, mensaje: saved.mensaje, nivel: saved.nivel, autor: saved.autor }),
+        body: JSON.stringify({ avisoId: saved.id }),
       }).catch(() => {}); // si falla el envío a Telegram, el aviso ya quedó publicado igual
     } catch (err) {
       showToast(`No se pudo publicar: ${err.message}`, "warn");
@@ -1855,7 +1927,8 @@ export default function EvolucionaApp() {
     try {
       const { path, url } = await subirArchivoFormacion(file);
       const saved = await insertFormacionRemote({ ...form, archivoPath: path, archivoUrl: url, autor: session?.email || "" });
-      setFormacion((prev) => [saved, ...prev]);
+      const [firmado] = await firmarArchivosFormacion([saved]);
+      setFormacion((prev) => [firmado, ...prev]);
       setFormacionModal(false);
       showToast("Contenido publicado");
     } catch (err) {
@@ -1965,6 +2038,7 @@ export default function EvolucionaApp() {
     reemplazarTurno,
     esSuperadmin, servicioActual, institucionActual, instituciones, setInstituciones, setServicios, modulos,
     misMiembros, entrarAServicio, loadAll,
+    licencias, setLicencias, licenciaActual, estadoLic, esMaestroDelServicio,
   };
 
   if (loading) {
@@ -1993,6 +2067,10 @@ export default function EvolucionaApp() {
     );
   }
 
+  const licenciaBloqueada = (misLicencias || []).find((l) => l.estado === "bloqueada");
+  if (!servicioActualId && !esSuperadmin && licenciaBloqueada) {
+    return <LicenciaVencidaScreen licencia={licenciaBloqueada} session={session} theme={theme} setTheme={setTheme} onLogout={handleLogout} />;
+  }
   if (!servicioActualId && !esSuperadmin) {
     return <SinServicioScreen session={session} theme={theme} setTheme={setTheme} onReintentar={() => loadAll()} onLogout={handleLogout} />;
   }
@@ -2098,6 +2176,7 @@ export default function EvolucionaApp() {
         </header>
 
         <main className="flex-1 overflow-y-auto ev-scroll p-5 lg:p-8">
+          <AvisoLicencia estado={estadoLic} licencia={licenciaActual} institucion={institucionActual} esMaestro={esMaestroDelServicio || esSuperadmin} />
           {view === "panel" && esSuperadmin && <PanelControl ctx={ctx} />}
           {(view === "dashboard" || NAV.some((n) => n.key === view && !navVisible(n, { isMaestro, esSuperadmin, modulos }))) && <Dashboard ctx={ctx} />}
           {view === "actividades" && modulos.actividades && <ActividadesCalendario ctx={ctx} />}
@@ -2601,6 +2680,182 @@ function SinServicioScreen({ session, theme, setTheme, onReintentar, onLogout })
           <button onClick={onLogout} className="ev-btn flex-1 justify-center px-3 py-2 text-[12.5px]" style={{ border: `1px solid ${T.border}`, color: T.muted }}>Cerrar sesión</button>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ============================== LICENCIA ============================== */
+// Franja informativa según el estado de la licencia de la institución:
+// por vencer → solo la ven los Maestros; solo lectura → la ven todos.
+function AvisoLicencia({ estado, licencia, institucion, esMaestro }) {
+  if (!licencia || estado === "activa" || estado === "bloqueada") return null;
+  if (estado === "por_vencer" && !esMaestro) return null;
+  const nombre = institucion?.nombre || "tu institución";
+  const faltan = diasParaVencer(licencia);
+  const porVencer = estado === "por_vencer";
+  return (
+    <div
+      role="status"
+      className="mb-5 flex items-start gap-3 rounded-xl px-4 py-3 text-[13px]"
+      style={{
+        background: porVencer ? T.accentSoft : T.dangerSoft,
+        color: porVencer ? T.accentInk : T.danger,
+        border: `1px solid color-mix(in srgb, ${porVencer ? T.primary : T.danger} 25%, transparent)`,
+      }}
+    >
+      {porVencer ? <Clock size={16} className="shrink-0 mt-0.5" /> : <Lock size={16} className="shrink-0 mt-0.5" />}
+      <p className="leading-relaxed">
+        {porVencer ? (
+          <>
+            <strong>La licencia de {nombre} vence el {fechaLarga(licencia.vence)}</strong> ({faltan === 0 ? "hoy" : faltan === 1 ? "mañana" : `en ${faltan} días`}).
+            {" "}Después habrá 15 días de solo lectura y luego se bloqueará el acceso. La información no se borra. Contacta al administrador para renovarla.
+          </>
+        ) : (
+          <>
+            <strong>La licencia de {nombre} venció el {fechaLarga(licencia.vence)}.</strong>
+            {" "}Estás en modo solo lectura: puedes consultar todo, pero no crear ni editar. El {fechaLarga(fechaBloqueoISO(licencia))} se bloqueará el acceso. La información se conserva; contacta al administrador para renovarla.
+          </>
+        )}
+      </p>
+    </div>
+  );
+}
+
+function LicenciaVencidaScreen({ licencia, session, theme, setTheme, onLogout }) {
+  return (
+    <div data-theme={theme} style={{ background: T.base, color: T.ink, fontFamily: "'Inter', sans-serif" }} className="ev-root relative w-full min-h-[720px] flex items-center justify-center p-6">
+      <style>{THEME_CSS}</style>
+      <style>{APP_BASE_CSS}</style>
+      <div className="absolute top-5 right-5"><ThemeToggle theme={theme} setTheme={setTheme} /></div>
+      <div className="ev-card w-full max-w-sm p-6" style={{ background: T.surface }}>
+        <div className="w-11 h-11 rounded-xl flex items-center justify-center mb-3" style={{ background: T.dangerSoft }}>
+          <Lock size={20} style={{ color: T.danger }} />
+        </div>
+        <h2 className="ev-display text-[18px] font-bold mb-1.5">La licencia de {licencia.institucion} está vencida</h2>
+        <p className="text-[13px] leading-relaxed" style={{ color: T.muted }}>
+          {licencia.vence ? `Venció el ${fechaLarga(licencia.vence)}. ` : ""}
+          Por eso el acceso está suspendido. <strong style={{ color: T.ink }}>Toda la información del servicio se conserva</strong> y vuelve a estar disponible apenas se renueve la licencia.
+        </p>
+        <p className="text-[12.5px] mt-3" style={{ color: T.muted }}>Contacta al administrador de Evoluciona o al responsable de tu institución.</p>
+        <button onClick={onLogout} className="ev-btn w-full justify-center px-3 py-2.5 text-[13px] mt-5" style={{ border: `1px solid ${T.border}` }}>
+          Cerrar sesión ({session.email})
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ============================== TELEGRAM POR SERVICIO ============================== */
+function TelegramServicioConfig({ ctx }) {
+  const { servicioActualId, servicioActual, showToast, isMaestro } = ctx;
+  const [fila, setFila] = useState(undefined); // undefined = cargando; null = sin fila
+  const [error, setError] = useState(null);
+  const [trabajando, setTrabajando] = useState(false);
+
+  async function cargar() {
+    setError(null);
+    try {
+      const rows = await sb(`servicio_telegram?servicio_id=eq.${servicioActualId}&select=*`);
+      setFila(rows[0] || null);
+    } catch (err) {
+      setFila(null);
+      setError(/servicio_telegram/i.test(err.message) ? "Falta correr el SQL de la etapa 3 en Supabase." : err.message);
+    }
+  }
+  React.useEffect(() => { cargar(); }, [servicioActualId]);
+
+  async function generarCodigo() {
+    setTrabajando(true);
+    try {
+      const codigo = generarCodigoAleatorio();
+      const expira = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+      const [row] = await sb("servicio_telegram?on_conflict=servicio_id", {
+        method: "POST", prefer: "resolution=merge-duplicates,return=representation",
+        body: JSON.stringify({ servicio_id: servicioActualId, codigo, codigo_expira: expira }),
+      });
+      setFila(row);
+    } catch (err) {
+      showToast(`No se pudo generar el código: ${err.message}`, "warn");
+    } finally {
+      setTrabajando(false);
+    }
+  }
+  async function desvincular() {
+    if (!window.confirm(`¿Desvincular el grupo "${fila.chat_nombre}" de ${servicioActual?.nombre}? Los avisos dejarán de llegar a ese grupo.`)) return;
+    try {
+      const [row] = await sb(`servicio_telegram?servicio_id=eq.${servicioActualId}`, { method: "PATCH", body: JSON.stringify({ chat_id: null, chat_nombre: null, vinculado_en: null }) });
+      setFila(row);
+      showToast("Grupo desvinculado", "warn");
+    } catch (err) {
+      showToast(`No se pudo desvincular: ${err.message}`, "warn");
+    }
+  }
+  async function copiar(texto) {
+    try { await navigator.clipboard.writeText(texto); showToast("Copiado"); } catch (_) { window.prompt("Copia esto:", texto); }
+  }
+
+  const vinculado = fila?.chat_id;
+  const codigoVigente = fila?.codigo && fila?.codigo_expira && new Date(fila.codigo_expira) > new Date();
+  const comando = codigoVigente ? `/vincular@${TELEGRAM_BOT_USERNAME} ${fila.codigo}` : "";
+
+  return (
+    <div className="ev-card p-5">
+      <h3 className="ev-display font-semibold text-[15px] mb-1">Grupo de Telegram de {servicioActual?.nombre || "este servicio"}</h3>
+      <p className="text-[12px] mb-4" style={{ color: T.muted }}>
+        Los avisos del tablero de este servicio también llegan a este grupo, y los que publiques para toda la institución llegan a los grupos de todos sus servicios. Es opcional: si el equipo usa WhatsApp, los avisos igual se ven aquí en el tablero.
+      </p>
+
+      {fila === undefined && <p className="text-[12.5px]" style={{ color: T.muted }}>Cargando…</p>}
+      {error && <p className="text-[12.5px]" style={{ color: T.danger }}>{error}</p>}
+
+      {fila !== undefined && !error && vinculado && (
+        <div className="flex items-center justify-between gap-3 flex-wrap px-3.5 py-3 rounded-xl" style={{ background: T.primarySoft }}>
+          <span className="flex items-center gap-2 text-[13px]" style={{ color: T.primaryDark }}>
+            <CheckCircle2 size={16} /> Vinculado a <strong>"{fila.chat_nombre}"</strong>
+          </span>
+          {isMaestro && (
+            <span className="flex gap-2">
+              <button onClick={generarCodigo} disabled={trabajando} className="ev-btn px-3 py-1.5 text-[12px] disabled:opacity-40" style={{ border: `1px solid ${T.border}`, background: T.surface }}>Cambiar de grupo</button>
+              <button onClick={desvincular} className="ev-btn px-3 py-1.5 text-[12px]" style={{ background: T.surface, color: T.danger, border: `1px solid ${T.border}` }}>Desvincular</button>
+            </span>
+          )}
+        </div>
+      )}
+
+      {fila !== undefined && !error && isMaestro && (!vinculado || codigoVigente) && (
+        <div className={vinculado ? "mt-4" : ""}>
+          {!codigoVigente ? (
+            <button onClick={generarCodigo} disabled={trabajando} className="ev-btn px-3.5 py-2 text-[12.5px] text-white disabled:opacity-40" style={{ background: "#229ED9" }}>
+              {trabajando ? "Generando…" : "Vincular un grupo de Telegram"}
+            </button>
+          ) : (
+            <ol className="flex flex-col gap-3 text-[13px]">
+              <li className="flex gap-3">
+                <span className="w-6 h-6 rounded-full flex items-center justify-center text-[12px] font-bold shrink-0" style={{ background: T.primarySoft, color: T.primaryDark }}>1</span>
+                <span>En Telegram, agrega a <strong>@{TELEGRAM_BOT_USERNAME}</strong> al grupo del equipo de {servicioActual?.nombre} (o crea el grupo si aún no existe).</span>
+              </li>
+              <li className="flex gap-3">
+                <span className="w-6 h-6 rounded-full flex items-center justify-center text-[12px] font-bold shrink-0" style={{ background: T.primarySoft, color: T.primaryDark }}>2</span>
+                <span className="min-w-0 flex-1">
+                  Escribe en ese grupo exactamente esto:
+                  <span className="flex items-center gap-2 mt-1.5 flex-wrap">
+                    <code className="ev-mono text-[13px] px-2.5 py-1.5 rounded-lg break-all" style={{ background: T.base, border: `1px solid ${T.border}`, color: T.primaryDark }}>{comando}</code>
+                    <button onClick={() => copiar(comando)} className="ev-btn px-2.5 py-1.5 text-[12px]" style={{ border: `1px solid ${T.border}` }}><Copy size={12} /> Copiar</button>
+                  </span>
+                  <span className="block text-[11.5px] mt-1" style={{ color: T.muted }}>El código vence a las {new Date(fila.codigo_expira).toLocaleTimeString("es-CO", { hour: "numeric", minute: "2-digit" })}. El bot responderá "Listo" en el grupo.</span>
+                </span>
+              </li>
+              <li className="flex gap-3">
+                <span className="w-6 h-6 rounded-full flex items-center justify-center text-[12px] font-bold shrink-0" style={{ background: T.primarySoft, color: T.primaryDark }}>3</span>
+                <span>Cuando el bot confirme, toca <button onClick={cargar} className="font-semibold underline" style={{ color: T.primary }}>revisar de nuevo</button>.</span>
+              </li>
+            </ol>
+          )}
+        </div>
+      )}
+      {fila !== undefined && !error && !isMaestro && !vinculado && (
+        <p className="text-[12.5px]" style={{ color: T.muted }}>Este servicio no tiene grupo de Telegram vinculado.</p>
+      )}
     </div>
   );
 }
@@ -4987,7 +5242,7 @@ function Configuracion({ ctx }) {
       )}
 
       {isMaestro && conTurnos && <LiquidacionConfigCard ctx={ctx} />}
-      {esSuperadmin && <TelegramGrupoConfig />}
+      {(isMaestro || esSuperadmin) && <TelegramServicioConfig ctx={ctx} />}
       {esSuperadmin && <CronEjecucionesLog />}
 
       {festivoModal && <FestivoModal ctx={ctx} onClose={() => setFestivoModal(false)} />}
@@ -5003,7 +5258,34 @@ const MODULO_ICONO = {
 };
 
 function PanelControl({ ctx }) {
-  const { instituciones, setInstituciones, servicios, setServicios, usuariosLista, showToast, entrarAServicio, servicioActualId, crearServicio, toggleActivoUsuario, loadAll } = ctx;
+  const { instituciones, setInstituciones, servicios, setServicios, usuariosLista, showToast, entrarAServicio, servicioActualId, crearServicio, toggleActivoUsuario, loadAll, licencias, setLicencias } = ctx;
+  const [editorLicencia, setEditorLicencia] = useState(null); // institución cuya licencia se edita
+  const licenciaDe = (iid) => (licencias || []).find((l) => l.institucionId === iid) || null;
+  // Personas que ocupan cupo: activas, aprobadas, con acceso a algún servicio de la institución.
+  function personasEn(iid) {
+    const ids = new Set(servicios.filter((sv) => sv.institucionId === iid).map((sv) => sv.id));
+    const usuarios = new Set((miembros || []).filter((m) => ids.has(m.servicioId)).map((m) => m.usuarioId));
+    return usuariosLista.filter((u) => usuarios.has(u.id) && u.activo && u.aprobado && !u.esSuperadmin).length;
+  }
+  async function guardarLicencia(iid, datos) {
+    try {
+      const [row] = await sb("licencias?on_conflict=institucion_id", {
+        method: "POST", prefer: "resolution=merge-duplicates,return=representation",
+        body: JSON.stringify({
+          institucion_id: iid, plan: datos.plan || null, inicio: datos.inicio || undefined, vence: datos.vence || null,
+          max_personas: datos.maxPersonas ? Number(datos.maxPersonas) : null,
+          max_servicios: datos.maxServicios ? Number(datos.maxServicios) : null,
+          modulos: datos.modulos, notas: datos.notas || null, updated_at: new Date().toISOString(),
+        }),
+      });
+      const lic = mapLicencia(row);
+      setLicencias((prev) => [...(prev || []).filter((l) => l.institucionId !== iid), lic]);
+      setEditorLicencia(null);
+      showToast("Licencia guardada");
+    } catch (err) {
+      showToast(`No se pudo guardar la licencia: ${err.message}`, "warn");
+    }
+  }
   const [miembros, setMiembros] = useState(null);
   const [errorMiembros, setErrorMiembros] = useState(null);
   const [editorServicio, setEditorServicio] = useState(null); // { modo: 'crear'|'editar', servicio?, institucionId? }
@@ -5027,6 +5309,11 @@ function PanelControl({ ctx }) {
   const serviciosActivos = servicios.filter((sv) => sv.activo).length;
 
   async function alternarModulo(sv, key) {
+    const lic = licenciaDe(sv.institucionId);
+    if (lic && lic.modulos[key] === false) {
+      showToast(`${MODULOS.find((m) => m.key === key)?.label} no está incluido en la licencia. Actívalo primero en la licencia.`, "warn");
+      return;
+    }
     const modulos = { ...sv.modulos, [key]: !sv.modulos[key] };
     setServicios((prev) => prev.map((x) => (x.id === sv.id ? { ...x, modulos } : x)));
     try {
@@ -5137,15 +5424,22 @@ function PanelControl({ ctx }) {
                 </div>
                 <div className="min-w-0">
                   <h2 className="ev-display text-[17px] font-bold truncate">{inst.nombre}</h2>
-                  <p className="text-[12px]" style={{ color: T.muted }}>{susServicios.length} {susServicios.length === 1 ? "servicio" : "servicios"}</p>
+                  <ResumenLicencia licencia={licenciaDe(inst.id)} personas={miembros === null ? null : personasEn(inst.id)} servicios={susServicios.length} tablaExiste={licencias !== null} />
                 </div>
                 <button onClick={() => renombrarInstitucion(inst)} title="Renombrar institución" className="p-1.5 rounded-md" style={{ color: T.muted }}>
                   <Pencil size={13} />
                 </button>
               </div>
-              <button onClick={() => setEditorServicio({ modo: "crear", institucionId: inst.id })} className="ev-btn px-3 py-1.5 text-[12.5px] text-white" style={{ background: T.primary }}>
-                <Plus size={13} /> Nuevo servicio
-              </button>
+              <div className="flex gap-2">
+                {licencias !== null && (
+                  <button onClick={() => setEditorLicencia(inst)} className="ev-btn px-3 py-1.5 text-[12.5px]" style={{ border: `1px solid ${T.border}` }}>
+                    <Shield size={13} /> Licencia
+                  </button>
+                )}
+                <button onClick={() => setEditorServicio({ modo: "crear", institucionId: inst.id })} className="ev-btn px-3 py-1.5 text-[12.5px] text-white" style={{ background: T.primary }}>
+                  <Plus size={13} /> Nuevo servicio
+                </button>
+              </div>
             </div>
 
             <div className="flex flex-col">
@@ -5167,7 +5461,17 @@ function PanelControl({ ctx }) {
                     <div className="flex items-center gap-1 flex-wrap" role="group" aria-label={`Funciones de ${sv.nombre}`}>
                       {MODULOS.map((m) => {
                         const Icono = MODULO_ICONO[m.key];
-                        const on = sv.modulos[m.key] !== false;
+                        const lic = licenciaDe(sv.institucionId);
+                        const incluido = !lic || lic.modulos[m.key] !== false;
+                        const on = incluido && sv.modulos[m.key] !== false;
+                        if (!incluido) {
+                          return (
+                            <span key={m.key} title={`${m.label}: no incluido en la licencia`} className="relative w-8 h-8 rounded-lg flex items-center justify-center" style={{ color: T.muted, border: `1px dashed ${T.border}`, opacity: 0.45 }}>
+                              <Icono size={15} />
+                              <Lock size={9} className="absolute -right-0.5 -bottom-0.5" style={{ background: T.surface, borderRadius: 4 }} />
+                            </span>
+                          );
+                        }
                         return (
                           <button
                             key={m.key}
@@ -5263,6 +5567,7 @@ function PanelControl({ ctx }) {
 
       {editorServicio && (
         <ServicioEditorModal
+          licencia={licenciaDe(editorServicio.servicio?.institucionId || editorServicio.institucionId)}
           inicial={editorServicio}
           instituciones={instituciones}
           saving={ctx.saving}
@@ -5271,6 +5576,139 @@ function PanelControl({ ctx }) {
         />
       )}
       {nuevaInstitucion && <NuevaInstitucionModal onCrear={crearInstitucion} onClose={() => setNuevaInstitucion(false)} />}
+      {editorLicencia && (
+        <LicenciaEditorModal
+          institucion={editorLicencia}
+          licencia={licenciaDe(editorLicencia.id)}
+          personas={miembros === null ? null : personasEn(editorLicencia.id)}
+          servicios={servicios.filter((sv) => sv.institucionId === editorLicencia.id).length}
+          onGuardar={(datos) => guardarLicencia(editorLicencia.id, datos)}
+          onClose={() => setEditorLicencia(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+const ESTADO_LICENCIA_TEXTO = {
+  activa: { texto: "Vigente", fondo: "primarySoft", tinta: "primaryDark" },
+  por_vencer: { texto: "Por vencer", fondo: "accentSoft", tinta: "accentInk" },
+  solo_lectura: { texto: "Vencida · solo lectura", fondo: "dangerSoft", tinta: "danger" },
+  bloqueada: { texto: "Vencida · bloqueada", fondo: "dangerSoft", tinta: "danger" },
+};
+function ResumenLicencia({ licencia, personas, servicios, tablaExiste }) {
+  if (!tablaExiste) return <p className="text-[12px]" style={{ color: T.muted }}>{servicios} {servicios === 1 ? "servicio" : "servicios"}</p>;
+  const estado = estadoLicencia(licencia);
+  const e = ESTADO_LICENCIA_TEXTO[estado];
+  const cupo = (n, max, singular, plural) => `${n ?? "…"}${max ? ` de ${max}` : ""} ${(max || n) === 1 ? singular : plural}`;
+  return (
+    <p className="text-[12px] flex items-center gap-x-2 gap-y-1 flex-wrap" style={{ color: T.muted }}>
+      <span className="px-1.5 py-0.5 rounded-full text-[10.5px] font-semibold" style={{ background: T[e.fondo], color: T[e.tinta] }}>{e.texto}</span>
+      <span>{licencia?.vence ? `vence el ${fechaLarga(licencia.vence)}` : "sin vencimiento"}</span>
+      <span>{cupo(personas, licencia?.maxPersonas, "persona", "personas")}</span>
+      <span>{cupo(servicios, licencia?.maxServicios, "servicio", "servicios")}</span>
+    </p>
+  );
+}
+
+function LicenciaEditorModal({ institucion, licencia, personas, servicios, onGuardar, onClose }) {
+  const [form, setForm] = useState({
+    plan: licencia?.plan || "",
+    inicio: licencia?.inicio || "",
+    vence: licencia?.vence || "",
+    maxPersonas: licencia?.maxPersonas ?? "",
+    maxServicios: licencia?.maxServicios ?? "",
+    modulos: licencia ? { ...licencia.modulos } : { ...MODULOS_TODOS },
+    notas: licencia?.notas || "",
+  });
+  const [guardando, setGuardando] = useState(false);
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+  const vistaPrevia = { vence: form.vence || null };
+  const estado = estadoLicencia(vistaPrevia);
+  const e = ESTADO_LICENCIA_TEXTO[estado];
+  const bajoCupoPersonas = form.maxPersonas && personas !== null && Number(form.maxPersonas) < personas;
+  const bajoCupoServicios = form.maxServicios && Number(form.maxServicios) < servicios;
+
+  async function guardar() {
+    setGuardando(true);
+    await onGuardar(form);
+    setGuardando(false);
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 sm:p-4" onClick={onClose}>
+      <div className="ev-card ev-sheet ev-fade-in w-full sm:max-w-lg max-h-[92vh] overflow-y-auto ev-scroll p-5 sm:p-6" onClick={(ev) => ev.stopPropagation()}>
+        <div className="flex items-center justify-between mb-1">
+          <h3 className="ev-display font-semibold text-[17px]">Licencia de {institucion.nombre}</h3>
+          <button onClick={onClose} aria-label="Cerrar"><X size={18} /></button>
+        </div>
+        <p className="text-[12.5px] mb-5" style={{ color: T.muted }}>
+          Un mes antes del vencimiento los Maestros ven un aviso. Al vencer quedan 15 días de solo lectura y luego se bloquea el acceso. Nunca se borra información.
+        </p>
+        <div className="flex flex-col gap-4">
+          <div className="grid sm:grid-cols-2 gap-3">
+            <Field label="Plan (nombre libre)">
+              <input value={form.plan} onChange={(ev) => set("plan", ev.target.value)} placeholder="Ej. Anual 2026" style={inputStyle} />
+            </Field>
+            <Field label="Inicio">
+              <input type="date" value={form.inicio} onChange={(ev) => set("inicio", ev.target.value)} style={inputStyle} />
+            </Field>
+          </div>
+          <Field label="Vence (déjalo vacío si no vence)">
+            <div className="flex items-center gap-2 flex-wrap">
+              <input type="date" value={form.vence} onChange={(ev) => set("vence", ev.target.value)} style={{ ...inputStyle, width: "auto", flex: "1 1 160px" }} />
+              {form.vence && (
+                <button type="button" onClick={() => set("vence", "")} className="ev-btn px-2.5 py-2 text-[12px]" style={{ border: `1px solid ${T.border}`, color: T.muted }}>Quitar fecha</button>
+              )}
+              <span className="px-2 py-1 rounded-full text-[11.5px] font-semibold" style={{ background: T[e.fondo], color: T[e.tinta] }}>{e.texto}</span>
+            </div>
+          </Field>
+          <div className="grid sm:grid-cols-2 gap-3">
+            <Field label={`Máximo de personas (hoy: ${personas ?? "…"})`}>
+              <input type="number" min={1} value={form.maxPersonas} onChange={(ev) => set("maxPersonas", ev.target.value)} placeholder="Sin límite" style={inputStyle} />
+            </Field>
+            <Field label={`Máximo de servicios (hoy: ${servicios})`}>
+              <input type="number" min={1} value={form.maxServicios} onChange={(ev) => set("maxServicios", ev.target.value)} placeholder="Sin límite" style={inputStyle} />
+            </Field>
+          </div>
+          {(bajoCupoPersonas || bajoCupoServicios) && (
+            <p className="text-[12px] rounded-lg px-3 py-2" style={{ background: T.accentSoft, color: T.accentInk }}>
+              El cupo queda por debajo de lo que ya existe. Nadie pierde acceso, pero no se podrán agregar más {bajoCupoPersonas ? "personas" : "servicios"} hasta liberar cupo o ampliarlo.
+            </p>
+          )}
+          <div>
+            <p className="text-[11.5px] font-medium mb-2" style={{ color: T.muted }}>Funciones incluidas en la licencia</p>
+            <div className="flex flex-wrap gap-1.5">
+              {MODULOS.map((m) => {
+                const Icono = MODULO_ICONO[m.key];
+                const on = form.modulos[m.key] !== false;
+                return (
+                  <button
+                    key={m.key}
+                    type="button"
+                    onClick={() => set("modulos", { ...form.modulos, [m.key]: !on })}
+                    aria-pressed={on}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[12.5px] font-medium"
+                    style={{ border: `1px solid ${on ? T.primary : T.border}`, background: on ? T.primarySoft : T.surface, color: on ? T.primaryDark : T.muted }}
+                  >
+                    <Icono size={14} /> {m.label}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-[11.5px] mt-2" style={{ color: T.muted }}>Lo que no esté incluido se oculta en todos los servicios de {institucion.nombre}, sin borrar sus datos.</p>
+          </div>
+          <Field label="Notas internas (opcional)">
+            <textarea rows={2} value={form.notas} onChange={(ev) => set("notas", ev.target.value)} placeholder="Ej. Pago anual, factura #123" style={{ ...inputStyle, resize: "vertical" }} />
+          </Field>
+        </div>
+        <div className="flex justify-end gap-2 mt-6">
+          <button onClick={onClose} className="ev-btn px-4 py-2 text-[13px]" style={{ border: `1px solid ${T.border}` }}>Cancelar</button>
+          <button onClick={guardar} disabled={guardando} className="ev-btn px-4 py-2 text-[13px] text-white disabled:opacity-40" style={{ background: T.primary }}>
+            {guardando ? "Guardando…" : "Guardar licencia"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -5338,7 +5776,7 @@ function FilaPersonaPanel({ u, miembros, servicios, instituciones, esUnoMismo, o
   );
 }
 
-function ServicioEditorModal({ inicial, instituciones, saving, onGuardar, onClose }) {
+function ServicioEditorModal({ inicial, instituciones, saving, onGuardar, onClose, licencia }) {
   const sv = inicial.servicio;
   const [nombre, setNombre] = useState(sv?.nombre || "");
   const [institucionId, setInstitucionId] = useState(sv?.institucionId || inicial.institucionId || instituciones[0]?.id || "");
@@ -5369,15 +5807,18 @@ function ServicioEditorModal({ inicial, instituciones, saving, onGuardar, onClos
             <div className="grid sm:grid-cols-2 gap-2">
               {MODULOS.map((m) => {
                 const Icono = MODULO_ICONO[m.key];
-                const on = modulos[m.key] !== false;
+                const incluido = !licencia || licencia.modulos[m.key] !== false;
+                const on = incluido && modulos[m.key] !== false;
                 return (
                   <button
                     key={m.key}
                     type="button"
+                    disabled={!incluido}
+                    title={incluido ? undefined : "No incluido en la licencia de la institución"}
                     onClick={() => setModulos((prev) => ({ ...prev, [m.key]: !on }))}
                     aria-pressed={on}
-                    className="flex items-start gap-2.5 text-left rounded-xl px-3 py-2.5 transition-colors"
-                    style={{ border: `1px solid ${on ? T.primary : T.border}`, background: on ? T.primarySoft : T.surface }}
+                    className="flex items-start gap-2.5 text-left rounded-xl px-3 py-2.5 transition-colors disabled:cursor-not-allowed"
+                    style={{ border: `1px ${incluido ? "solid" : "dashed"} ${on ? T.primary : T.border}`, background: on ? T.primarySoft : T.surface, opacity: incluido ? 1 : 0.5 }}
                   >
                     <Icono size={16} className="shrink-0 mt-0.5" style={{ color: on ? T.primary : T.muted }} />
                     <span className="min-w-0">
