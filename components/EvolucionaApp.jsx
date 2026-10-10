@@ -302,6 +302,7 @@ const APP_BASE_CSS = `
   .ev-card table tbody tr:hover{ background: color-mix(in srgb, ${T.primary} 4%, ${T.surface}); }
   @keyframes ev-fade-in { from { opacity:0; transform: translateY(4px); } to { opacity:1; transform: translateY(0); } }
   .ev-fade-in { animation: ev-fade-in .2s ease; }
+  @media (max-width: 639px) { .ev-sheet { border-bottom-left-radius:0; border-bottom-right-radius:0; } }
 `;
 
 const ACTIVITY_TYPES = {
@@ -5478,6 +5479,8 @@ function Biblioteca({ ctx }) {
 function BibliotecaIndividual({ ctx }) {
   const { biblioteca, temas, isMaestro, setBibModal, deleteBiblioteca, setTemaModal, eliminarTema } = ctx;
   const [busqueda, setBusqueda] = useState("");
+  const [abiertos, setAbiertos] = useState(() => new Set()); // ids de temas desplegados ("__sin_tema" para el capítulo final)
+  const [leyendoId, setLeyendoId] = useState(null); // actividad abierta en modo lectura
   const term = normalizarTexto(busqueda);
 
   function coincide(b) {
@@ -5485,42 +5488,48 @@ function BibliotecaIndividual({ ctx }) {
     const tema = temas.find((t) => t.id === b.temaId);
     return normalizarTexto(b.nombre).includes(term)
       || normalizarTexto(b.metodologia).includes(term)
+      || normalizarTexto(b.objetivos).includes(term)
       || (tema && normalizarTexto(tema.nombre).includes(term));
   }
 
-  function tarjeta(b) {
-    const TipoIcon = ACTIVITY_TYPES[b.tipo].icon;
-    return (
-      <div key={b.id} className="ev-card p-4 flex flex-col gap-2">
-        <span className="self-start flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-semibold" style={{ background: `${ACTIVITY_TYPES[b.tipo].color}17`, color: ACTIVITY_TYPES[b.tipo].color }}>
-          <TipoIcon size={11} /> {ACTIVITY_TYPES[b.tipo].label}
-        </span>
-        <h4 className="font-semibold text-[14px]">{b.nombre}</h4>
-        {b.metodologia && <p className="text-[12px] line-clamp-3" style={{ color: T.muted }}><strong>Metodología:</strong> {b.metodologia}</p>}
-        {b.objetivos && <p className="text-[12px] line-clamp-2" style={{ color: T.muted }}><strong>Objetivos:</strong> {b.objetivos}</p>}
-        {isMaestro && (
-          <div className="flex gap-2 mt-1">
-            <button onClick={() => setBibModal({ mode: "edit", item: b })} className="ev-btn text-[12px] px-2.5 py-1" style={{ border: `1px solid ${T.border}` }}>
-              <Pencil size={12} /> Editar
-            </button>
-            <button onClick={() => deleteBiblioteca(b.id)} className="ev-btn text-[12px] px-2.5 py-1" style={{ background: T.dangerSoft, color: T.danger }}>
-              <Trash2 size={12} /> Eliminar
-            </button>
-          </div>
-        )}
-      </div>
-    );
+  // Capítulos del índice: un capítulo por tema (en orden alfabético, como ya llegan)
+  // y al final "Sin tema" si hay actividades sueltas.
+  const capitulos = [
+    ...temas.map((t) => ({ id: t.id, nombre: t.nombre, esTema: true, items: biblioteca.filter((b) => b.temaId === t.id).sort((a, b) => a.nombre.localeCompare(b.nombre)) })),
+    { id: "__sin_tema", nombre: "Sin tema", esTema: false, items: biblioteca.filter((b) => !b.temaId).sort((a, b) => a.nombre.localeCompare(b.nombre)) },
+  ].filter((c) => c.esTema || c.items.length > 0);
+
+  const capitulosVisibles = capitulos
+    .map((c) => ({ ...c, visibles: c.items.filter(coincide) }))
+    .filter((c) => !term || c.visibles.length > 0);
+  const hayResultados = capitulosVisibles.length > 0;
+  const todosAbiertos = capitulos.length > 0 && capitulos.every((c) => abiertos.has(c.id));
+
+  function toggle(id) {
+    setAbiertos((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+  function toggleTodos() {
+    setAbiertos(todosAbiertos ? new Set() : new Set(capitulos.map((c) => c.id)));
   }
 
-  const sinTema = biblioteca.filter((b) => !b.temaId && coincide(b));
-  const hayResultados = biblioteca.some(coincide);
+  // Lista plana (en el orden del índice) para poder pasar a la anterior/siguiente desde la lectura.
+  const ordenLectura = capitulos.flatMap((c) => c.items);
+  const leyendo = ordenLectura.find((b) => b.id === leyendoId) || null;
 
   return (
     <>
-      <div className="flex items-center justify-between">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
-          <h3 className="ev-display font-semibold text-[16px]">Biblioteca de actividades</h3>
-          <p className="text-[12.5px]" style={{ color: T.muted }}>Agrupadas por tema (ej. "Factores de riesgo") para encontrarlas rápido.</p>
+          <h3 className="ev-display font-semibold text-[16px] flex items-center gap-2">
+            <BookOpen size={17} style={{ color: T.primary }} /> Biblioteca de actividades
+          </h3>
+          <p className="text-[12.5px] mt-0.5" style={{ color: T.muted }}>
+            {temas.length} {temas.length === 1 ? "tema" : "temas"} · {biblioteca.length} {biblioteca.length === 1 ? "actividad" : "actividades"} — toca un tema para ver sus actividades.
+          </p>
         </div>
         {isMaestro && (
           <div className="flex gap-2 shrink-0">
@@ -5528,59 +5537,203 @@ function BibliotecaIndividual({ ctx }) {
               <Plus size={14} /> Nuevo tema
             </button>
             <button onClick={() => setBibModal({ mode: "new", item: null })} className="ev-btn px-3.5 py-2 text-[12.5px] text-white" style={{ background: T.primary }}>
-              <Plus size={14} /> Nueva plantilla
+              <Plus size={14} /> Nueva actividad
             </button>
           </div>
         )}
       </div>
 
-      <div className="relative max-w-sm">
-        <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: T.muted }} />
-        <input
-          value={busqueda}
-          onChange={(e) => setBusqueda(e.target.value)}
-          placeholder="Buscar por actividad o tema… ej. sistema de creencias"
-          style={{ ...inputStyle, paddingLeft: 32 }}
-        />
-      </div>
-
-      {!hayResultados && term && (
-        <p className="text-[12.5px] text-center py-8" style={{ color: T.muted }}>No hay actividades ni temas que coincidan con "{busqueda}".</p>
-      )}
-
-      {temas.map((tema) => {
-        const items = biblioteca.filter((b) => b.temaId === tema.id && coincide(b));
-        if (term && items.length === 0) return null; // oculta el tema si no aporta resultados a esta búsqueda
-        return (
-          <div key={tema.id} className="flex flex-col gap-3">
-            <div className="flex items-center justify-between border-b pb-1.5" style={{ borderColor: T.border }}>
-              <h4 className="ev-display font-semibold text-[14px]" style={{ color: T.primaryDark }}>{tema.nombre}</h4>
-              {isMaestro && (
-                <button onClick={() => eliminarTema(tema.id)} title="Eliminar tema (las actividades quedan sin tema)" style={{ color: T.muted }}>
-                  <Trash2 size={13} />
-                </button>
-              )}
+      <div className="ev-card overflow-hidden max-w-3xl w-full">
+        {/* Cabecera del índice */}
+        <div className="px-5 sm:px-7 pt-6 pb-4 border-b" style={{ borderColor: T.border }}>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.14em]" style={{ color: T.muted }}>Índice de contenidos</p>
+          <div className="flex items-center gap-2 mt-3 flex-wrap">
+            <div className="relative flex-1 min-w-[200px]">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: T.muted }} />
+              <input
+                value={busqueda}
+                onChange={(e) => setBusqueda(e.target.value)}
+                placeholder="Buscar actividad o tema… ej. sistema de creencias"
+                style={{ ...inputStyle, paddingLeft: 32 }}
+              />
             </div>
-            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {items.map(tarjeta)}
-              {items.length === 0 && <p className="text-[12px] col-span-full" style={{ color: T.muted }}>Sin actividades todavía en este tema.</p>}
-            </div>
+            {!term && capitulos.length > 0 && (
+              <button onClick={toggleTodos} className="ev-btn px-3 py-2 text-[12px]" style={{ border: `1px solid ${T.border}`, color: T.muted }}>
+                {todosAbiertos ? "Contraer todo" : "Desplegar todo"}
+              </button>
+            )}
           </div>
-        );
-      })}
+        </div>
 
-      <div className="flex flex-col gap-3">
-        {temas.length > 0 && sinTema.length > 0 && (
-          <h4 className="ev-display font-semibold text-[14px] border-b pb-1.5" style={{ color: T.muted, borderColor: T.border }}>Sin tema</h4>
-        )}
-        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {sinTema.map(tarjeta)}
-          {sinTema.length === 0 && temas.length === 0 && !term && (
-            <p className="text-[12.5px] col-span-full text-center py-8" style={{ color: T.muted }}>Todavía no hay plantillas registradas.</p>
+        {/* Capítulos */}
+        <div className="flex flex-col">
+          {capitulosVisibles.map((c, idx) => {
+            const numero = String(idx + 1).padStart(2, "0");
+            const abierto = term ? true : abiertos.has(c.id); // al buscar, se despliega todo lo que coincide
+            const lista = term ? c.visibles : c.items;
+            return (
+              <div key={c.id} className="border-b last:border-b-0" style={{ borderColor: T.border }}>
+                <div className="flex items-center gap-2 pr-3 sm:pr-5">
+                  <button
+                    onClick={() => !term && toggle(c.id)}
+                    aria-expanded={abierto}
+                    className="flex-1 min-w-0 flex items-center gap-3 sm:gap-4 pl-5 sm:pl-7 py-4 text-left transition-colors hover:bg-black/[0.02]"
+                  >
+                    <span className="ev-mono text-[13px] font-semibold shrink-0 w-6" style={{ color: c.esTema ? T.primary : T.muted }}>{c.esTema ? numero : "—"}</span>
+                    <span className="font-semibold text-[15px] truncate" style={{ color: c.esTema ? T.ink : T.muted }}>{c.nombre}</span>
+                    <span className="flex-1 min-w-[16px] self-end mb-[6px] border-b-2 border-dotted" style={{ borderColor: T.border }} aria-hidden="true" />
+                    <span className="text-[12.5px] font-medium shrink-0 px-2 py-0.5 rounded-full" style={{ background: T.primarySoft, color: T.primaryDark }}>
+                      {c.items.length} {c.items.length === 1 ? "actividad" : "actividades"}
+                    </span>
+                    <ChevronDown size={16} className="shrink-0 transition-transform duration-200" style={{ color: T.muted, transform: abierto ? "rotate(0deg)" : "rotate(-90deg)" }} />
+                  </button>
+                  {isMaestro && c.esTema && (
+                    <button onClick={() => eliminarTema(c.id)} title="Eliminar tema (las actividades quedan sin tema)" className="p-1.5 rounded-md shrink-0" style={{ color: T.muted }}>
+                      <Trash2 size={13} />
+                    </button>
+                  )}
+                </div>
+
+                {abierto && (
+                  <div className="ev-fade-in pb-3">
+                    {lista.map((b, j) => {
+                      const tipo = ACTIVITY_TYPES[b.tipo] || ACTIVITY_TYPES.terapeutico;
+                      const TipoIcon = tipo.icon;
+                      return (
+                        <button
+                          key={b.id}
+                          onClick={() => setLeyendoId(b.id)}
+                          className="w-full flex items-center gap-3 sm:gap-4 pl-5 sm:pl-7 pr-5 sm:pr-7 py-2.5 text-left transition-colors hover:bg-black/[0.025] group"
+                        >
+                          <span className="ev-mono text-[12px] shrink-0 w-6" style={{ color: T.muted }}>{c.esTema ? `${idx + 1}.${j + 1}` : "·"}</span>
+                          <TipoIcon size={14} className="shrink-0" style={{ color: tipo.color }} />
+                          <span className="min-w-0 flex-1">
+                            <span className="block text-[14px] font-medium leading-snug group-hover:underline" style={{ color: T.ink }}>{b.nombre}</span>
+                            <span className="block text-[11.5px]" style={{ color: T.muted }}>{tipo.label}</span>
+                          </span>
+                          <span className="text-[12px] font-semibold shrink-0 flex items-center gap-1" style={{ color: T.primary }}>
+                            Leer <ChevronRight size={14} />
+                          </span>
+                        </button>
+                      );
+                    })}
+                    {lista.length === 0 && (
+                      <p className="pl-[68px] sm:pl-[84px] py-2 text-[12.5px]" style={{ color: T.muted }}>Sin actividades todavía en este tema.</p>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+
+          {!hayResultados && term && (
+            <p className="text-[13px] text-center py-10 px-5" style={{ color: T.muted }}>No hay actividades ni temas que coincidan con "{busqueda}".</p>
+          )}
+          {capitulos.length === 0 && !term && (
+            <p className="text-[13px] text-center py-10 px-5" style={{ color: T.muted }}>Todavía no hay actividades en la biblioteca.</p>
           )}
         </div>
       </div>
+
+      {leyendo && (
+        <LecturaActividadModal
+          ctx={ctx}
+          item={leyendo}
+          tema={temas.find((t) => t.id === leyendo.temaId) || null}
+          anterior={ordenLectura[ordenLectura.indexOf(leyendo) - 1] || null}
+          siguiente={ordenLectura[ordenLectura.indexOf(leyendo) + 1] || null}
+          onNavegar={(b) => setLeyendoId(b.id)}
+          onClose={() => setLeyendoId(null)}
+          onEditar={() => { setLeyendoId(null); setBibModal({ mode: "edit", item: leyendo }); }}
+          onEliminar={() => {
+            if (window.confirm(`¿Eliminar "${leyendo.nombre}" de la biblioteca?`)) { setLeyendoId(null); deleteBiblioteca(leyendo.id); }
+          }}
+        />
+      )}
     </>
+  );
+}
+
+// Vista de lectura de una actividad de la biblioteca: disponible para cualquier
+// usuario (Maestro o Lector). Solo el Maestro ve los botones de editar/eliminar/programar.
+function LecturaActividadModal({ ctx, item, tema, anterior, siguiente, onNavegar, onClose, onEditar, onEliminar }) {
+  const { isMaestro, setModal } = ctx;
+  const tipo = ACTIVITY_TYPES[item.tipo] || ACTIVITY_TYPES.terapeutico;
+  const TipoIcon = tipo.icon;
+
+  React.useEffect(() => {
+    function onKey(e) {
+      if (e.key === "Escape") onClose();
+      if (e.key === "ArrowRight" && siguiente) onNavegar(siguiente);
+      if (e.key === "ArrowLeft" && anterior) onNavegar(anterior);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [anterior, siguiente]);
+
+  function programar() {
+    onClose();
+    setModal({ mode: "new", event: { title: item.nombre, type: item.tipo, metodologia: item.metodologia, objetivos: item.objetivos } });
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 sm:p-4" onClick={onClose}>
+      <div
+        className="ev-card ev-sheet ev-fade-in w-full sm:max-w-2xl max-h-[92vh] flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between gap-3 px-5 sm:px-8 pt-5 pb-3">
+          <p className="text-[12px] truncate" style={{ color: T.muted }}>
+            Biblioteca <span className="mx-1">›</span> <span style={{ color: T.primaryDark }}>{tema?.nombre || "Sin tema"}</span>
+          </p>
+          <button onClick={onClose} aria-label="Cerrar" className="p-1 rounded-md shrink-0"><X size={18} /></button>
+        </div>
+
+        <div className="px-5 sm:px-8 pb-6 overflow-y-auto ev-scroll">
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[12px] font-semibold" style={{ background: `color-mix(in srgb, ${tipo.color} 10%, ${T.surface})`, color: tipo.color }}>
+            <TipoIcon size={13} /> {tipo.label}
+          </span>
+          <h2 className="ev-display text-[22px] sm:text-[24px] font-bold leading-tight mt-3">{item.nombre}</h2>
+
+          <section className="mt-6">
+            <h4 className="text-[11.5px] font-semibold uppercase tracking-[0.12em] mb-2" style={{ color: T.muted }}>Objetivos</h4>
+            {item.objetivos
+              ? <p className="text-[15px] leading-relaxed whitespace-pre-line" style={{ color: T.ink }}>{item.objetivos}</p>
+              : <p className="text-[13.5px] italic" style={{ color: T.muted }}>Sin objetivos registrados.</p>}
+          </section>
+
+          <section className="mt-6 pt-6 border-t" style={{ borderColor: T.border }}>
+            <h4 className="text-[11.5px] font-semibold uppercase tracking-[0.12em] mb-2" style={{ color: T.muted }}>Metodología</h4>
+            {item.metodologia
+              ? <p className="text-[15px] leading-relaxed whitespace-pre-line" style={{ color: T.ink }}>{item.metodologia}</p>
+              : <p className="text-[13.5px] italic" style={{ color: T.muted }}>Sin metodología registrada.</p>}
+          </section>
+
+          {isMaestro && (
+            <div className="flex gap-2 flex-wrap mt-7">
+              <button onClick={programar} className="ev-btn px-3.5 py-2 text-[12.5px] text-white" style={{ background: T.primary }}>
+                <CalendarDays size={14} /> Programar en el calendario
+              </button>
+              <button onClick={onEditar} className="ev-btn px-3.5 py-2 text-[12.5px]" style={{ border: `1px solid ${T.border}` }}>
+                <Pencil size={13} /> Editar
+              </button>
+              <button onClick={onEliminar} className="ev-btn px-3.5 py-2 text-[12.5px]" style={{ background: T.dangerSoft, color: T.danger }}>
+                <Trash2 size={13} /> Eliminar
+              </button>
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center justify-between gap-2 px-3 sm:px-5 py-3 border-t" style={{ borderColor: T.border }}>
+          <button onClick={() => anterior && onNavegar(anterior)} disabled={!anterior} className="ev-btn px-2.5 py-1.5 text-[12.5px] min-w-0 disabled:opacity-30" style={{ color: T.muted }}>
+            <ChevronLeft size={15} className="shrink-0" /> <span className="truncate max-w-[130px] sm:max-w-[200px]">{anterior ? anterior.nombre : "Anterior"}</span>
+          </button>
+          <button onClick={() => siguiente && onNavegar(siguiente)} disabled={!siguiente} className="ev-btn px-2.5 py-1.5 text-[12.5px] min-w-0 disabled:opacity-30" style={{ color: T.muted }}>
+            <span className="truncate max-w-[130px] sm:max-w-[200px]">{siguiente ? siguiente.nombre : "Siguiente"}</span> <ChevronRight size={15} className="shrink-0" />
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
