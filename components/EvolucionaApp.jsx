@@ -476,6 +476,8 @@ function mapPersonal(row) {
     tipoContrato: row.tipo_contrato, horas: Number(row.horas_semana),
     disponibilidad: row.disponibilidad, estado: row.estado,
     telegramVinculado: !!row.telegram_chat_id,
+    // undefined = la columna aún no existe (SQL liquidacion_lector.sql sin correr)
+    usuarioId: "usuario_id" in row ? row.usuario_id || null : undefined,
   };
 }
 function mapBiblioteca(row) {
@@ -851,6 +853,8 @@ function personalPayload(form) {
     disponibilidad: form.disponibilidad || "Completa",
     estado: form.estado || "activo",
     servicio_id: SERVICIO_ACTUAL,
+    // Solo se envía si la columna existe (ver mapPersonal), para no romper el guardado.
+    ...(form.usuarioId !== undefined ? { usuario_id: form.usuarioId || null } : {}),
   };
 }
 async function insertPersonalRemote(form) {
@@ -3881,7 +3885,8 @@ function nombreArchivoSeguro(s) {
   return (s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_|_$/g, "").toLowerCase();
 }
 
-function LiquidacionPanel({ ctx, turnos, personas, filtroPersonal, setFiltroPersonal, desde, hasta, festivoSet, etiquetaPeriodo }) {
+// soloPropia = vista del Lector: una sola persona (la suya), sin lista, sin bonificaciones/descuentos.
+function LiquidacionPanel({ ctx, turnos, personas, filtroPersonal, setFiltroPersonal, desde, hasta, festivoSet, etiquetaPeriodo, soloPropia = false }) {
   const { config, rem, error, cargando } = useLiquidacionDatos();
   const [bonif, setBonif] = useState("");
   const [desc, setDesc] = useState("");
@@ -3889,7 +3894,7 @@ function LiquidacionPanel({ ctx, turnos, personas, filtroPersonal, setFiltroPers
   React.useEffect(() => { setFechaPago(rangoMesCompleto(hasta).fin); }, [hasta]);
   const turnosExtra = ctx.turnosExtra;
   const filas = personas.map((p) => ({ p, r: calcularLiquidacion({ persona: p, rem: rem[p.id], config, turnos, turnosExtra, festivoSet, desde, hasta }) }));
-  const sel = filtroPersonal ? filas.find((f) => f.p.id === filtroPersonal) : null;
+  const sel = soloPropia ? filas[0] || null : filtroPersonal ? filas.find((f) => f.p.id === filtroPersonal) : null;
   const totalGeneral = filas.reduce((a, f) => a + f.r.total, 0);
   const servicioNombre = ctx.servicioActual?.nombre || "";
   const institucionNombre = ctx.institucionActual?.nombre || "";
@@ -3913,9 +3918,11 @@ function LiquidacionPanel({ ctx, turnos, personas, filtroPersonal, setFiltroPers
     <div className="ev-card overflow-hidden max-w-3xl">
       <div className="px-4 py-3 border-b flex items-start justify-between gap-3 flex-wrap" style={{ borderColor: T.border }}>
         <div>
-          <h3 className="ev-display font-semibold text-[13.5px] flex items-center gap-1.5"><FileBarChart size={14} /> Resumen de liquidación estimada · {etiquetaPeriodo}</h3>
+          <h3 className="ev-display font-semibold text-[13.5px] flex items-center gap-1.5"><FileBarChart size={14} /> {soloPropia ? "Mi liquidación estimada" : "Resumen de liquidación estimada"} · {etiquetaPeriodo}</h3>
           <p className="text-[11.5px]" style={{ color: T.muted }}>
-            Solo visible para el Maestro. Es una estimación para consulta y validación previa; no reemplaza la nómina ni la facturación oficial.
+            {soloPropia
+              ? "Solo tú puedes ver esta información. Es una estimación con base en tus turnos; el valor oficial es el de nómina o el de tu cuenta de cobro aprobada."
+              : "Solo visible para el Maestro. Es una estimación para consulta y validación previa; no reemplaza la nómina ni la facturación oficial."}
           </p>
         </div>
         {!cargando && config && !sel && filas.length > 0 && (
@@ -3928,7 +3935,10 @@ function LiquidacionPanel({ ctx, turnos, personas, filtroPersonal, setFiltroPers
         )}
       </div>
       {cargando && <p className="px-4 py-4 text-[12.5px]" style={{ color: T.muted }}>Cargando parámetros…</p>}
-      {!cargando && (error || !config) && (
+      {!cargando && (error || !config) && soloPropia && (
+        <p className="px-4 py-4 text-[12.5px]" style={{ color: T.muted }}>Tu liquidación todavía no está disponible. Consulta con el Maestro de tu servicio.</p>
+      )}
+      {!cargando && (error || !config) && !soloPropia && (
         <p className="px-4 py-4 text-[12.5px]" style={{ color: T.danger }}>
           No se pudieron leer los parámetros de liquidación{error ? ` (${error})` : ""}. Revisa que ya corriste el archivo <strong>liquidacion.sql</strong> en Supabase.
         </p>
@@ -3973,9 +3983,12 @@ function LiquidacionPanel({ ctx, turnos, personas, filtroPersonal, setFiltroPers
           </table>
         </div>
       )}
-      {!cargando && config && sel && (() => {
-        const b = Number(String(bonif).replace(/[^\d.]/g, "")) || 0;
-        const d = Number(String(desc).replace(/[^\d.]/g, "")) || 0;
+      {!cargando && config && soloPropia && sel && !sel.r.configurado && (
+        <p className="px-4 py-4 text-[12.5px]" style={{ color: T.muted }}>Tu liquidación todavía no está configurada (salario o valor hora). Consulta con el Maestro de tu servicio.</p>
+      )}
+      {!cargando && config && sel && (!soloPropia || sel.r.configurado) && (() => {
+        const b = soloPropia ? 0 : Number(String(bonif).replace(/[^\d.]/g, "")) || 0;
+        const d = soloPropia ? 0 : Number(String(desc).replace(/[^\d.]/g, "")) || 0;
         const r = sel.r;
         const totalFinal = r.total + b - d;
         return (
@@ -3997,10 +4010,10 @@ function LiquidacionPanel({ ctx, turnos, personas, filtroPersonal, setFiltroPers
                 >
                   <Download size={13} /> Exportar PDF
                 </button>
-                <button onClick={() => setFiltroPersonal("")} className="ev-btn px-3 py-1.5 text-[12px]" style={{ border: `1px solid ${T.border}` }}>Ver a todos</button>
+                {!soloPropia && <button onClick={() => setFiltroPersonal("")} className="ev-btn px-3 py-1.5 text-[12px]" style={{ border: `1px solid ${T.border}` }}>Ver a todos</button>}
               </div>
             </div>
-            {!r.configurado && (
+            {!r.configurado && !soloPropia && (
               <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-[12.5px]" style={{ background: T.accentSoft, color: T.accentInk }}>
                 <AlertTriangle size={14} /> Falta configurar {r.modalidad === "prestacion" ? "el valor de la hora" : "el salario base"} de esta persona en Configuración → Parámetros de liquidación.
               </div>
@@ -4024,6 +4037,7 @@ function LiquidacionPanel({ ctx, turnos, personas, filtroPersonal, setFiltroPers
                     <td className="py-2 text-right tabular-nums" style={l.deduccion ? { color: T.danger } : undefined}>{l.valor < 0 ? `(${fmtCOP(-l.valor)})` : fmtCOP(l.valor)}</td>
                   </tr>
                 ))}
+                {!soloPropia && <>
                 <tr className="border-t" style={{ borderColor: T.border }}>
                   <td className="py-2">Bonificaciones <span className="text-[11px]" style={{ color: T.muted }}>(opcional, no se guarda)</span></td>
                   <td />
@@ -4034,6 +4048,7 @@ function LiquidacionPanel({ ctx, turnos, personas, filtroPersonal, setFiltroPers
                   <td />
                   <td className="py-1.5 text-right"><input value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="0" inputMode="numeric" style={{ ...inputStyle, width: 130, padding: "6px 10px", textAlign: "right" }} /></td>
                 </tr>
+                </>}
                 <tr className="border-t-2" style={{ borderColor: T.border }}>
                   <td className="py-2.5 font-semibold" colSpan={2}>{r.modalidad === "prestacion" ? "Total estimado a facturar" : "Total neto estimado a recibir"}</td>
                   <td className="py-2.5 text-right tabular-nums font-semibold text-[15px]" style={{ color: T.primaryDark }}>{fmtCOP(totalFinal)}</td>
@@ -4205,6 +4220,8 @@ function TurnosCalendario({ ctx }) {
   const festivoSet = new Set((festivos || []).map((f) => f.fecha));
   const elegibles = personal.filter((p) => esCargoDeTurno(p.cargo, reglas?.cargosTurno));
   const [generarOpen, setGenerarOpen] = useState(false);
+  // Ficha de Personal vinculada a la cuenta que inició sesión (para "Mi liquidación").
+  const miFicha = ctx.session?.id ? personal.find((p) => p.usuarioId && p.usuarioId === ctx.session.id) : null;
 
   const baseParaResumen = elegibles.length > 0 ? elegibles : personal;
 
@@ -4449,6 +4466,17 @@ function TurnosCalendario({ ctx }) {
         <LiquidacionPanel
           ctx={ctx} turnos={turnos} personas={personasParaTablas}
           filtroPersonal={filtroPersonal} setFiltroPersonal={setFiltroPersonal}
+          desde={primerDiaResumen} hasta={ultimoDiaResumen} festivoSet={festivoSet}
+          etiquetaPeriodo={usarRango
+            ? `${new Date(`${rangoDesde}T00:00:00`).toLocaleDateString("es-CO", { day: "numeric", month: "short" })} – ${new Date(`${rangoHasta}T00:00:00`).toLocaleDateString("es-CO", { day: "numeric", month: "short" })}`
+            : MES_LABEL[base.getMonth()]}
+        />
+      )}
+      {!isMaestro && miFicha && (
+        <LiquidacionPanel
+          soloPropia
+          ctx={ctx} turnos={turnos} personas={[miFicha]}
+          filtroPersonal={miFicha.id} setFiltroPersonal={() => {}}
           desde={primerDiaResumen} hasta={ultimoDiaResumen} festivoSet={festivoSet}
           etiquetaPeriodo={usarRango
             ? `${new Date(`${rangoDesde}T00:00:00`).toLocaleDateString("es-CO", { day: "numeric", month: "short" })} – ${new Date(`${rangoHasta}T00:00:00`).toLocaleDateString("es-CO", { day: "numeric", month: "short" })}`
@@ -6985,9 +7013,24 @@ function DetailRow({ label, value, multiline }) {
 
 /* ============================== MODAL: PERSONAL ============================== */
 function PersonalModal({ ctx, onClose, initial }) {
-  const { savePersonal, saving } = ctx;
+  const { savePersonal, saving, personal, usuariosLista, servicioActualId } = ctx;
   const base = initial.person || {};
+  // ¿Ya existe la columna usuario_id? Se deduce de cualquier ficha cargada.
+  const vinculoDisponible = personal.some((p) => p.usuarioId !== undefined);
+  const [miembrosServicio, setMiembrosServicio] = useState(null);
+  React.useEffect(() => {
+    if (!vinculoDisponible) return;
+    sb(`miembros?servicio_id=eq.${servicioActualId}&select=usuario_id`)
+      .then((rows) => setMiembrosServicio((rows || []).map((r) => r.usuario_id)))
+      .catch(() => setMiembrosServicio([]));
+  }, [vinculoDisponible, servicioActualId]);
+  // Cuentas del servicio que no estén ya vinculadas a otra ficha.
+  const ocupadas = new Set(personal.filter((p) => p.usuarioId && p.id !== base.id).map((p) => p.usuarioId));
+  const cuentas = (usuariosLista || [])
+    .filter((u) => u.id === base.usuarioId || ((miembrosServicio || []).includes(u.id) && !ocupadas.has(u.id)))
+    .sort((a, b) => (a.nombre || a.correo).localeCompare(b.nombre || b.correo));
   const [form, setForm] = useState({
+    usuarioId: vinculoDisponible ? base.usuarioId || null : undefined,
     id: base.id || nid(),
     nombre: base.nombre || "",
     cargo: base.cargo || "",
@@ -7037,6 +7080,20 @@ function PersonalModal({ ctx, onClose, initial }) {
               </select>
             </Field>
           </div>
+          {vinculoDisponible && (
+            <Field label="Cuenta de Evoluciona de esta persona">
+              <select value={form.usuarioId || ""} onChange={(e) => set("usuarioId", e.target.value || null)} style={inputStyle}>
+                <option value="">Sin vincular</option>
+                {cuentas.map((u) => (
+                  <option key={u.id} value={u.id}>{u.nombre && u.nombre !== u.correo ? `${u.nombre} · ${u.correo}` : u.correo}</option>
+                ))}
+              </select>
+              <span className="text-[11px]" style={{ color: T.muted }}>
+                Con esto, la persona ve y descarga su propia liquidación estimada (y solo la suya) en Turnos.
+                {miembrosServicio && cuentas.length === 0 && !form.usuarioId ? " No hay cuentas libres en este servicio: primero dale acceso en Configuración." : ""}
+              </span>
+            </Field>
+          )}
         </div>
         <div className="flex justify-end gap-2 mt-5">
           <button onClick={onClose} className="ev-btn px-4 py-2 text-[13px]" style={{ border: `1px solid ${T.border}` }}>Cancelar</button>
