@@ -1,3 +1,4 @@
+import { verificarAcceso } from "../../../lib/acceso";
 // Cuando se publica un nuevo aviso en el tablero de Evoluciona, esta ruta lo
 // reenvía también al grupo de Telegram vinculado (si hay uno confirmado).
 // Si algo falla aquí, no pasa nada grave: el aviso ya quedó guardado en la
@@ -10,14 +11,9 @@ export async function POST(request) {
   try {
     const { titulo, mensaje, nivel, autor } = await request.json();
 
-    const authHeader = request.headers.get("authorization") || "";
-    const accessToken = authHeader.replace(/^Bearer\s+/i, "");
-    if (!accessToken) return Response.json({ ok: false, error: "Debes iniciar sesión." }, { status: 401 });
-
-    const userRes = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${accessToken}` },
-    });
-    if (!userRes.ok) return Response.json({ ok: false, error: "Sesión inválida." }, { status: 401 });
+    // Solo un Maestro aprobado y activo puede reenviar avisos al grupo del equipo.
+    const acceso = await verificarAcceso(request, { requiereMaestro: true });
+    if (!acceso.ok) return Response.json({ ok: false, error: acceso.error }, { status: acceso.status });
 
     const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
     const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;

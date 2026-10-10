@@ -551,7 +551,57 @@ async function guardarResultadoRemote(form, existente) {
 }
 
 function mapUsuario(row) {
-  return { id: row.id, nombre: row.nombre, correo: row.correo, rol: row.rol, activo: row.activo !== false };
+  return {
+    id: row.id, nombre: row.nombre, correo: row.correo, rol: row.rol, activo: row.activo !== false,
+    // Si la columna aún no existe (SQL de la etapa 1 sin correr), se trata como aprobado.
+    aprobado: row.aprobado !== false, createdAt: row.created_at,
+  };
+}
+function sesionDesdeUsuario(propio, emailRespaldo) {
+  return { id: propio?.id, email: propio?.correo || emailRespaldo, rol: propio?.rol || "lector", aprobado: propio ? propio.aprobado !== false : false };
+}
+
+/* ---------- Invitaciones (etapa 1: acceso controlado) ---------- */
+const INVITACION_LOCAL_KEY = "evoluciona_invitacion";
+function leerCodigoInvitacionDeUrl() {
+  try {
+    if (typeof window === "undefined") return "";
+    const codigo = new URLSearchParams(window.location.search).get("invitacion") || "";
+    if (codigo) window.localStorage.setItem(INVITACION_LOCAL_KEY, codigo.trim().toUpperCase());
+    return codigo.trim().toUpperCase();
+  } catch (_) {
+    return "";
+  }
+}
+function codigoInvitacionGuardado() {
+  try { return typeof window !== "undefined" ? window.localStorage.getItem(INVITACION_LOCAL_KEY) || "" : ""; } catch (_) { return ""; }
+}
+function olvidarCodigoInvitacion() {
+  try { if (typeof window !== "undefined") window.localStorage.removeItem(INVITACION_LOCAL_KEY); } catch (_) {}
+}
+async function canjearInvitacionRemote(codigo) {
+  const res = await sb("rpc/canjear_invitacion", { method: "POST", body: JSON.stringify({ p_codigo: codigo }) });
+  return res || { ok: false, error: "No hubo respuesta del servidor." };
+}
+function generarCodigoInvitacion() {
+  const chars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // sin O/0/I/1, para que no se confundan al escribirlo
+  let out = "";
+  const azar = new Uint32Array(8);
+  try { window.crypto.getRandomValues(azar); } catch (_) { for (let i = 0; i < 8; i++) azar[i] = Math.floor(Math.random() * 1e9); }
+  for (let i = 0; i < 8; i++) out += chars[azar[i] % chars.length];
+  return out;
+}
+function mapInvitacion(row) {
+  return {
+    id: row.id, codigo: row.codigo, servicioId: row.servicio_id || null, nota: row.nota || "",
+    usosMax: row.usos_max, usos: row.usos, expiraEn: row.expira_en, activa: row.activa, createdAt: row.created_at,
+  };
+}
+function estadoInvitacion(inv) {
+  if (!inv.activa) return { texto: "Desactivado", tono: "off" };
+  if (inv.expiraEn && new Date(inv.expiraEn) < new Date()) return { texto: "Vencido", tono: "off" };
+  if (inv.usos >= inv.usosMax) return { texto: "Agotado", tono: "off" };
+  return { texto: "Vigente", tono: "ok" };
 }
 
 function mapServicio(row) {
@@ -689,8 +739,18 @@ async function updateBibliotecaRemote(form) {
 async function deleteBibliotecaRemote(id) {
   await sb(`biblioteca_actividades?id=eq.${id}`, { method: "DELETE", prefer: "return=minimal" });
 }
+function uidDelToken(token) {
+  try {
+    let p = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+    p += "===".slice((p.length + 3) % 4);
+    return JSON.parse(atob(p)).sub || null;
+  } catch (_) {
+    return null;
+  }
+}
 async function fetchOwnUsuario() {
-  const rows = await sb("usuarios?select=*&limit=1");
+  const uid = ACCESS_TOKEN ? uidDelToken(ACCESS_TOKEN) : null;
+  const rows = await sb(uid ? `usuarios?id=eq.${uid}&select=*&limit=1` : "usuarios?select=*&limit=1");
   return rows && rows[0] ? mapUsuario(rows[0]) : null;
 }
 async function fetchUsuarios() {
@@ -996,7 +1056,8 @@ export default function EvolucionaApp() {
   const [theme, setTheme] = useTheme();
   const [session, setSession] = useState(null); // { email, rol }
   const [recuperandoSesion, setRecuperandoSesion] = useState(true);
-  const [mostrarLanding, setMostrarLanding] = useState(true);
+  const [codigoInvitacionUrl] = useState(() => leerCodigoInvitacionDeUrl());
+  const [mostrarLanding, setMostrarLanding] = useState(() => !codigoInvitacionUrl);
 
   // Al abrir la app (o volver a ella tras haber estado en segundo plano en
   // el celular, donde el sistema operativo suele "matar" la pestaña de la
@@ -1021,7 +1082,7 @@ export default function EvolucionaApp() {
             }
           }
           if (propio && propio.activo !== false) {
-            setSession({ id: propio.id, email: propio.correo, rol: propio.rol || "lector" });
+            setSession(sesionDesdeUsuario(propio));
           } else {
             ACCESS_TOKEN = null;
             REFRESH_TOKEN = null;
@@ -1148,7 +1209,7 @@ export default function EvolucionaApp() {
       setLoading(false);
     }
   }
-  React.useEffect(() => { if (session) loadAll(); }, [session]);
+  React.useEffect(() => { if (session && session.aprobado !== false) loadAll(); }, [session]);
 
   async function cambiarServicio(id) {
     if (id === servicioActualId) { setServicioSelectorAbierto(false); return; }
@@ -1246,7 +1307,11 @@ export default function EvolucionaApp() {
     if (mostrarLanding) {
       return <LandingPage onComenzar={() => setMostrarLanding(false)} theme={theme} setTheme={setTheme} />;
     }
-    return <LoginScreen onLogin={(s) => setSession(s)} onVolver={() => setMostrarLanding(true)} theme={theme} setTheme={setTheme} />;
+    return <LoginScreen onLogin={(s) => setSession(s)} onVolver={() => setMostrarLanding(true)} theme={theme} setTheme={setTheme} codigoInicial={codigoInvitacionUrl} />;
+  }
+
+  if (session.aprobado === false) {
+    return <PendienteScreen session={session} theme={theme} setTheme={setTheme} onAprobado={(s) => setSession(s)} onLogout={handleLogout} />;
   }
 
   const weekStart = addDays(monday, weekOffset * 7);
@@ -1607,6 +1672,17 @@ export default function EvolucionaApp() {
       showToast(`No se pudo actualizar: ${err.message}`, "warn");
     }
   }
+  async function aprobarUsuario(id) {
+    try {
+      const [row] = await sb(`usuarios?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ aprobado: true, activo: true }) });
+      const actualizado = mapUsuario(row);
+      if (!actualizado.aprobado) throw new Error("la base de datos no permitió el cambio");
+      setUsuariosLista((prev) => prev.map((u) => (u.id === id ? actualizado : u)));
+      showToast(`Acceso aprobado para ${actualizado.correo}`);
+    } catch (err) {
+      showToast(`No se pudo aprobar: ${err.message}`, "warn");
+    }
+  }
   async function toggleActivoUsuario(id, actual) {
     try {
       const actualizado = await updateUsuarioActivoRemote(id, !actual);
@@ -1746,7 +1822,7 @@ export default function EvolucionaApp() {
     crearPlantilla, eliminarPlantilla, agregarPlantillaItem, eliminarPlantillaItem,
     aplicarPlantillaModal, setAplicarPlantillaModal, aplicarPlantilla,
     avisos, avisoModal, setAvisoModal, crearAviso, eliminarAviso,
-    usuariosLista, cambiarRolUsuario, toggleActivoUsuario,
+    usuariosLista, cambiarRolUsuario, toggleActivoUsuario, aprobarUsuario,
     temas, temaModal, setTemaModal, crearTema, eliminarTema,
     formacion, formacionModal, setFormacionModal, subiendoArchivo, subirFormacion, eliminarFormacion,
     vistos, preguntas, resultados, marcarVisto, guardarPregunta, eliminarPregunta, enviarResultado,
@@ -1994,9 +2070,26 @@ function LandingPage({ onComenzar, theme, setTheme }) {
   );
 }
 
-function LoginScreen({ onLogin, onVolver, theme, setTheme }) {
-  const [mode, setMode] = useState("signin"); // 'signin' | 'signup'
-  const [form, setForm] = useState({ nombre: "", correo: "", password: "" });
+// Si la cuenta está pendiente y hay un código de invitación (escrito al
+// registrarse o recibido por enlace), intenta canjearlo. Devuelve el usuario
+// actualizado, o el mismo si no había código o no fue válido.
+async function intentarCanjeAutomatico(propio, codigo) {
+  if (!propio || propio.aprobado || !codigo) return { propio, errorCodigo: null };
+  try {
+    const r = await canjearInvitacionRemote(codigo);
+    if (r.ok) {
+      olvidarCodigoInvitacion();
+      return { propio: (await fetchOwnUsuario()) || propio, errorCodigo: null };
+    }
+    return { propio, errorCodigo: r.error || "El código no es válido." };
+  } catch (err) {
+    return { propio, errorCodigo: err.message };
+  }
+}
+
+function LoginScreen({ onLogin, onVolver, theme, setTheme, codigoInicial }) {
+  const [mode, setMode] = useState(codigoInicial ? "signup" : "signin"); // 'signin' | 'signup' | 'recover'
+  const [form, setForm] = useState({ nombre: "", correo: "", password: "", codigo: codigoInicial || codigoInvitacionGuardado() });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [notice, setNotice] = useState(null);
@@ -2024,9 +2117,11 @@ function LoginScreen({ onLogin, onVolver, theme, setTheme }) {
               body: JSON.stringify({ id: res.user?.id, nombre: form.nombre || form.correo, correo: form.correo, rol: "lector" }),
             });
           } catch (_) { /* la cuenta ya quedó creada; el registro en "usuarios" se puede reintentar luego */ }
-          const propio = await fetchOwnUsuario();
-          onLogin({ id: propio?.id, email: form.correo, rol: propio?.rol || "lector" });
+          const { propio } = await intentarCanjeAutomatico(await fetchOwnUsuario(), form.codigo.trim());
+          onLogin(sesionDesdeUsuario(propio, form.correo));
         } else {
+          // El código se guarda en el dispositivo para canjearlo en el primer inicio de sesión.
+          if (form.codigo.trim()) { try { window.localStorage.setItem(INVITACION_LOCAL_KEY, form.codigo.trim().toUpperCase()); } catch (_) {} }
           setNotice("Cuenta creada. Si tu proyecto exige confirmar el correo, revisa tu bandeja y luego inicia sesión aquí.");
           setMode("signin");
         }
@@ -2055,7 +2150,8 @@ function LoginScreen({ onLogin, onVolver, theme, setTheme }) {
           setError("Tu cuenta fue desactivada por un administrador. Contacta a un usuario Maestro.");
           return;
         }
-        onLogin({ id: propio?.id, email: form.correo, rol: propio?.rol || "lector" });
+        ({ propio } = await intentarCanjeAutomatico(propio, codigoInvitacionGuardado()));
+        onLogin(sesionDesdeUsuario(propio, form.correo));
       }
     } catch (err) {
       setError(err.message);
@@ -2086,7 +2182,7 @@ function LoginScreen({ onLogin, onVolver, theme, setTheme }) {
           <span className="ev-display text-[19px] font-bold" style={{ color: T.ink }}>EVOLUCIONA</span>
         </div>
         <p className="text-[12px] mb-5" style={{ color: T.muted }}>
-          {mode === "signin" ? "Inicia sesión para continuar" : mode === "signup" ? "Crea tu cuenta de coordinador" : "Te enviaremos un enlace para restablecer tu contraseña"}
+          {mode === "signin" ? "Inicia sesión para continuar" : mode === "signup" ? "Crea tu cuenta. Un Maestro debe aprobarla, o puedes usar un código de invitación." : "Te enviaremos un enlace para restablecer tu contraseña"}
         </p>
 
         {mode === "signup" && (
@@ -2104,6 +2200,21 @@ function LoginScreen({ onLogin, onVolver, theme, setTheme }) {
             <Field label="Contraseña">
               <input required type="password" minLength={6} value={form.password} onChange={(e) => set("password", e.target.value)} style={inputStyle} placeholder="Mínimo 6 caracteres" />
             </Field>
+          </div>
+        )}
+        {mode === "signup" && (
+          <div className="mt-3">
+            <Field label="Código de invitación (opcional)">
+              <input
+                value={form.codigo}
+                onChange={(e) => set("codigo", e.target.value.toUpperCase())}
+                style={{ ...inputStyle, letterSpacing: "0.12em" }}
+                className="ev-mono"
+                placeholder="Ej. K7MP2QXA"
+                autoCapitalize="characters"
+              />
+            </Field>
+            <p className="text-[11.5px] mt-1" style={{ color: T.muted }}>Si te lo dieron, tu cuenta queda activa al instante. Si no, un Maestro la revisará.</p>
           </div>
         )}
 
@@ -2200,6 +2311,123 @@ function ResetPasswordScreen({ token, theme, setTheme, onDone }) {
             </button>
           </form>
         )}
+      </div>
+    </div>
+  );
+}
+
+/* ============================== CUENTA PENDIENTE ============================== */
+// Lo que ve una persona que creó su cuenta pero todavía no tiene acceso: puede
+// esperar a que un Maestro la apruebe, o escribir un código de invitación.
+function PendienteScreen({ session, theme, setTheme, onAprobado, onLogout }) {
+  const [codigo, setCodigo] = useState(() => codigoInvitacionGuardado());
+  const [cargando, setCargando] = useState(false);
+  const [error, setError] = useState(null);
+  const [aviso, setAviso] = useState(null);
+
+  async function revisarDeNuevo() {
+    setCargando(true);
+    setError(null);
+    setAviso(null);
+    try {
+      const propio = await fetchOwnUsuario();
+      if (propio && propio.activo === false) {
+        setError("Tu cuenta fue desactivada. Contacta a un Maestro de tu institución.");
+      } else if (propio && propio.aprobado) {
+        onAprobado(sesionDesdeUsuario(propio));
+      } else {
+        setAviso("Tu cuenta sigue pendiente. Te avisaremos aquí apenas la aprueben.");
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setCargando(false);
+    }
+  }
+
+  async function canjear(e) {
+    e.preventDefault();
+    if (!codigo.trim()) return;
+    setCargando(true);
+    setError(null);
+    setAviso(null);
+    try {
+      const r = await canjearInvitacionRemote(codigo.trim());
+      if (!r.ok) {
+        setError(r.error || "Ese código no es válido.");
+        return;
+      }
+      olvidarCodigoInvitacion();
+      const propio = await fetchOwnUsuario();
+      onAprobado(sesionDesdeUsuario(propio));
+    } catch (err) {
+      setError(/canjear_invitacion/i.test(err.message) ? "Los códigos de invitación aún no están habilitados. Pide a un Maestro que apruebe tu cuenta." : err.message);
+    } finally {
+      setCargando(false);
+    }
+  }
+
+  // Revisa sola cada 30 segundos, por si un Maestro la aprueba mientras espera.
+  React.useEffect(() => {
+    const id = setInterval(async () => {
+      try {
+        const propio = await fetchOwnUsuario();
+        if (propio && propio.aprobado && propio.activo !== false) onAprobado(sesionDesdeUsuario(propio));
+      } catch (_) {}
+    }, 30 * 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  return (
+    <div data-theme={theme} style={{ background: T.base, color: T.ink, fontFamily: "'Inter', sans-serif" }} className="ev-root relative w-full min-h-[720px] flex items-center justify-center p-6 transition-colors duration-200">
+      <style>{THEME_CSS}</style>
+      <style>{APP_BASE_CSS}</style>
+      <div className="absolute top-5 right-5">
+        <ThemeToggle theme={theme} setTheme={setTheme} />
+      </div>
+      <div className="ev-card w-full max-w-sm p-6" style={{ background: T.surface }}>
+        <div className="flex items-center gap-2 mb-5">
+          <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: T.primarySoft }}>
+            <LogoMark size={20} />
+          </div>
+          <span className="ev-display text-[19px] font-bold" style={{ color: T.ink }}>EVOLUCIONA</span>
+        </div>
+
+        <div className="w-11 h-11 rounded-xl flex items-center justify-center mb-3" style={{ background: T.primarySoft }}>
+          <Clock size={20} style={{ color: T.primary }} />
+        </div>
+        <h2 className="ev-display text-[18px] font-bold mb-1.5">Tu cuenta está pendiente</h2>
+        <p className="text-[13px] leading-relaxed" style={{ color: T.muted }}>
+          Creaste tu cuenta con <strong style={{ color: T.ink }}>{session.email}</strong>. Para proteger la información de la institución, un Maestro debe aprobarla antes de que puedas entrar.
+        </p>
+
+        <form onSubmit={canjear} className="mt-5 pt-5 border-t" style={{ borderColor: T.border }}>
+          <Field label="¿Tienes un código de invitación?">
+            <input
+              value={codigo}
+              onChange={(e) => setCodigo(e.target.value.toUpperCase())}
+              placeholder="Ej. K7MP2QXA"
+              autoCapitalize="characters"
+              className="ev-mono"
+              style={{ ...inputStyle, letterSpacing: "0.12em" }}
+            />
+          </Field>
+          <button type="submit" disabled={cargando || !codigo.trim()} className="ev-btn w-full justify-center px-4 py-2.5 text-[13px] text-white mt-3 disabled:opacity-50" style={{ background: T.primary }}>
+            {cargando ? "Un momento…" : "Activar con este código"}
+          </button>
+        </form>
+
+        {error && <p className="text-[12px] mt-3 rounded-lg px-3 py-2" style={{ background: T.dangerSoft, color: T.danger }}>{error}</p>}
+        {aviso && <p className="text-[12px] mt-3 rounded-lg px-3 py-2" style={{ background: T.accentSoft, color: T.accentInk }}>{aviso}</p>}
+
+        <div className="flex gap-2 mt-4">
+          <button onClick={revisarDeNuevo} disabled={cargando} className="ev-btn flex-1 justify-center px-3 py-2 text-[12.5px] disabled:opacity-50" style={{ border: `1px solid ${T.border}` }}>
+            Ya me aprobaron
+          </button>
+          <button onClick={onLogout} className="ev-btn flex-1 justify-center px-3 py-2 text-[12.5px]" style={{ border: `1px solid ${T.border}`, color: T.muted }}>
+            Cerrar sesión
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -4565,6 +4793,9 @@ function Configuracion({ ctx }) {
         </div>
       </div>
 
+      {isMaestro && <SolicitudesPendientes ctx={ctx} />}
+      {isMaestro && <InvitacionesConfig ctx={ctx} />}
+
       {isMaestro && (
         <div className="ev-card overflow-hidden">
           <div className="px-5 py-4 border-b" style={{ borderColor: T.border }}>
@@ -4581,7 +4812,7 @@ function Configuracion({ ctx }) {
                 </tr>
               </thead>
               <tbody>
-                {ctx.usuariosLista.map((u) => {
+                {ctx.usuariosLista.filter((u) => u.aprobado || !u.activo).map((u) => {
                   const esUnoMismo = u.correo === ctx.session?.email;
                   return (
                     <tr key={u.id} className="border-t" style={{ borderColor: T.border }}>
@@ -4599,7 +4830,7 @@ function Configuracion({ ctx }) {
                       </td>
                       <td className="px-5 py-2.5">
                         <span className="px-2.5 py-1 rounded-full text-[11.5px] font-semibold" style={{ background: u.activo ? T.primarySoft : T.dangerSoft, color: u.activo ? T.primaryDark : T.danger }}>
-                          {u.activo ? "Activo" : "Desactivado"}
+                          {!u.activo ? (u.aprobado ? "Desactivado" : "Rechazado") : "Activo"}
                         </span>
                       </td>
                       <td className="px-5 py-2.5 text-right">
@@ -4630,6 +4861,219 @@ function Configuracion({ ctx }) {
 
       {festivoModal && <FestivoModal ctx={ctx} onClose={() => setFestivoModal(false)} />}
       {ctx.reglaPersonalModal && <ReglaPersonalModal ctx={ctx} onClose={() => ctx.setReglaPersonalModal(false)} />}
+    </div>
+  );
+}
+
+function SolicitudesPendientes({ ctx }) {
+  const { usuariosLista, aprobarUsuario, toggleActivoUsuario } = ctx;
+  const pendientes = usuariosLista.filter((u) => !u.aprobado && u.activo);
+  function rechazar(u) {
+    if (window.confirm(`¿Rechazar la solicitud de ${u.correo}? No podrá entrar. Puedes reactivarla después desde "Usuarios registrados".`)) {
+      toggleActivoUsuario(u.id, true);
+    }
+  }
+  return (
+    <div className="ev-card overflow-hidden" style={pendientes.length > 0 ? { border: `1px solid color-mix(in srgb, ${T.primary} 35%, ${T.border})` } : undefined}>
+      <div className="px-5 py-4 border-b flex items-center justify-between gap-3" style={{ borderColor: T.border }}>
+        <div>
+          <h3 className="ev-display font-semibold text-[15px] flex items-center gap-2">
+            Solicitudes de acceso
+            {pendientes.length > 0 && (
+              <span className="px-2 py-0.5 rounded-full text-[11.5px] font-bold text-white" style={{ background: T.primary }}>{pendientes.length}</span>
+            )}
+          </h3>
+          <p className="text-[12px]" style={{ color: T.muted }}>Cuentas nuevas que esperan tu aprobación. Mientras tanto no pueden ver ningún dato.</p>
+        </div>
+      </div>
+      <div className="flex flex-col divide-y" style={{ borderColor: T.border }}>
+        {pendientes.map((u) => (
+          <div key={u.id} className="flex items-center justify-between gap-3 px-5 py-3 flex-wrap">
+            <div className="min-w-0">
+              <p className="text-[13.5px] font-medium truncate">{u.nombre && u.nombre !== u.correo ? u.nombre : u.correo}</p>
+              <p className="text-[12px] truncate" style={{ color: T.muted }}>
+                {u.nombre && u.nombre !== u.correo ? `${u.correo} · ` : ""}
+                {u.createdAt ? `se registró el ${new Date(u.createdAt).toLocaleDateString("es-CO", { day: "numeric", month: "short" })}` : "nueva cuenta"}
+              </p>
+            </div>
+            <div className="flex gap-2 shrink-0">
+              <button onClick={() => rechazar(u)} className="ev-btn text-[12px] px-3 py-1.5" style={{ background: T.dangerSoft, color: T.danger }}>
+                Rechazar
+              </button>
+              <button onClick={() => aprobarUsuario(u.id)} className="ev-btn text-[12px] px-3 py-1.5 text-white" style={{ background: T.primary }}>
+                <CheckCircle2 size={13} /> Aprobar
+              </button>
+            </div>
+          </div>
+        ))}
+        {pendientes.length === 0 && (
+          <p className="px-5 py-5 text-[12.5px] text-center" style={{ color: T.muted }}>No hay solicitudes pendientes.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function InvitacionesConfig({ ctx }) {
+  const { servicios, session, showToast } = ctx;
+  const [lista, setLista] = useState([]);
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState(null);
+  const [creando, setCreando] = useState(false);
+  const [formAbierto, setFormAbierto] = useState(false);
+  const [form, setForm] = useState({ nota: "", servicioId: "", usosMax: 1, dias: 7 });
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+
+  async function cargar() {
+    setCargando(true);
+    setError(null);
+    try {
+      const filas = await sb("invitaciones?select=*&order=created_at.desc&limit=50");
+      setLista(filas.map(mapInvitacion));
+    } catch (err) {
+      setError(/invitaciones/i.test(err.message) && /404|42P01|does not exist|PGRST/i.test(err.message)
+        ? "Falta correr el SQL de la etapa 1 (etapa1_acceso_controlado.sql) en Supabase."
+        : err.message);
+    } finally {
+      setCargando(false);
+    }
+  }
+  React.useEffect(() => { cargar(); }, []);
+
+  function enlaceDe(inv) {
+    return `${window.location.origin}/?invitacion=${inv.codigo}`;
+  }
+  async function copiar(texto, que) {
+    try {
+      await navigator.clipboard.writeText(texto);
+      showToast(`${que} copiado`);
+    } catch (_) {
+      window.prompt("Copia esto:", texto);
+    }
+  }
+  async function crear() {
+    setCreando(true);
+    try {
+      const dias = Number(form.dias);
+      const body = {
+        codigo: generarCodigoInvitacion(),
+        nota: form.nota.trim() || null,
+        servicio_id: form.servicioId || null,
+        usos_max: Math.max(1, Number(form.usosMax) || 1),
+        expira_en: dias > 0 ? new Date(Date.now() + dias * 86400000).toISOString() : null,
+        creado_por: session?.id || null,
+      };
+      const [row] = await sb("invitaciones", { method: "POST", body: JSON.stringify(body) });
+      const nueva = mapInvitacion(row);
+      setLista((prev) => [nueva, ...prev]);
+      setFormAbierto(false);
+      setForm({ nota: "", servicioId: "", usosMax: 1, dias: 7 });
+      await copiar(enlaceDe(nueva), "Enlace de invitación");
+    } catch (err) {
+      showToast(`No se pudo crear: ${err.message}`, "warn");
+    } finally {
+      setCreando(false);
+    }
+  }
+  async function desactivar(inv) {
+    try {
+      const [row] = await sb(`invitaciones?id=eq.${inv.id}`, { method: "PATCH", body: JSON.stringify({ activa: false }) });
+      setLista((prev) => prev.map((i) => (i.id === inv.id ? mapInvitacion(row) : i)));
+      showToast("Código desactivado", "warn");
+    } catch (err) {
+      showToast(`No se pudo desactivar: ${err.message}`, "warn");
+    }
+  }
+
+  return (
+    <div className="ev-card overflow-hidden">
+      <div className="px-5 py-4 border-b flex items-start justify-between gap-3 flex-wrap" style={{ borderColor: T.border }}>
+        <div>
+          <h3 className="ev-display font-semibold text-[15px]">Códigos de invitación</h3>
+          <p className="text-[12px]" style={{ color: T.muted }}>Comparte un enlace o un código: quien lo use al crear su cuenta entra de una vez, sin esperar aprobación.</p>
+        </div>
+        {!formAbierto && !error && (
+          <button onClick={() => setFormAbierto(true)} className="ev-btn px-3 py-1.5 text-[12px] text-white shrink-0" style={{ background: T.primary }}>
+            <Plus size={13} /> Nuevo código
+          </button>
+        )}
+      </div>
+
+      {formAbierto && (
+        <div className="px-5 py-4 border-b flex flex-col gap-3" style={{ borderColor: T.border, background: T.base }}>
+          <Field label="¿Para quién es? (nota para ti, opcional)">
+            <input value={form.nota} onChange={(e) => set("nota", e.target.value)} placeholder="Ej. Auxiliares nuevos de octubre" style={inputStyle} />
+          </Field>
+          <div className="grid sm:grid-cols-3 gap-3">
+            <Field label="Servicio">
+              <select value={form.servicioId} onChange={(e) => set("servicioId", e.target.value)} style={inputStyle}>
+                <option value="">Cualquiera</option>
+                {servicios.map((sv) => <option key={sv.id} value={sv.id}>{sv.nombre}</option>)}
+              </select>
+            </Field>
+            <Field label="Cuántas personas pueden usarlo">
+              <input type="number" min={1} max={200} value={form.usosMax} onChange={(e) => set("usosMax", e.target.value)} style={inputStyle} />
+            </Field>
+            <Field label="Vence en">
+              <select value={form.dias} onChange={(e) => set("dias", e.target.value)} style={inputStyle}>
+                <option value={1}>1 día</option>
+                <option value={7}>7 días</option>
+                <option value={30}>30 días</option>
+                <option value={0}>No vence</option>
+              </select>
+            </Field>
+          </div>
+          <p className="text-[11.5px]" style={{ color: T.muted }}>Por ahora las personas entran como Lector. Para hacerlas Maestro, cámbiales el rol abajo en "Usuarios registrados".</p>
+          <div className="flex justify-end gap-2">
+            <button onClick={() => setFormAbierto(false)} className="ev-btn px-3.5 py-2 text-[12.5px]" style={{ border: `1px solid ${T.border}` }}>Cancelar</button>
+            <button onClick={crear} disabled={creando} className="ev-btn px-3.5 py-2 text-[12.5px] text-white disabled:opacity-50" style={{ background: T.primary }}>
+              {creando ? "Creando…" : "Crear y copiar enlace"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {cargando && <p className="px-5 py-5 text-[12.5px]" style={{ color: T.muted }}>Cargando…</p>}
+      {error && <p className="px-5 py-4 text-[12.5px]" style={{ color: T.danger }}>{error}</p>}
+      {!cargando && !error && (
+        <div className="flex flex-col divide-y" style={{ borderColor: T.border }}>
+          {lista.map((inv) => {
+            const estado = estadoInvitacion(inv);
+            const servicio = servicios.find((sv) => sv.id === inv.servicioId);
+            const vigente = estado.tono === "ok";
+            return (
+              <div key={inv.id} className="flex items-center justify-between gap-3 px-5 py-3 flex-wrap" style={{ opacity: vigente ? 1 : 0.6 }}>
+                <div className="min-w-0">
+                  <p className="flex items-center gap-2 flex-wrap">
+                    <span className="ev-mono text-[14px] font-semibold tracking-wider" style={{ color: T.primaryDark }}>{inv.codigo}</span>
+                    <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold" style={{ background: vigente ? T.primarySoft : T.base, color: vigente ? T.primaryDark : T.muted, border: vigente ? "none" : `1px solid ${T.border}` }}>
+                      {estado.texto}
+                    </span>
+                  </p>
+                  <p className="text-[12px] mt-0.5" style={{ color: T.muted }}>
+                    {inv.nota ? `${inv.nota} · ` : ""}{servicio ? `${servicio.nombre} · ` : ""}
+                    usado {inv.usos} de {inv.usosMax}
+                    {inv.expiraEn ? ` · vence ${new Date(inv.expiraEn).toLocaleDateString("es-CO", { day: "numeric", month: "short" })}` : " · no vence"}
+                  </p>
+                </div>
+                {vigente && (
+                  <div className="flex gap-2 shrink-0">
+                    <button onClick={() => copiar(enlaceDe(inv), "Enlace")} className="ev-btn text-[12px] px-2.5 py-1" style={{ border: `1px solid ${T.border}` }}>
+                      <Copy size={12} /> Copiar enlace
+                    </button>
+                    <button onClick={() => desactivar(inv)} title="Desactivar código" className="ev-btn text-[12px] px-2 py-1" style={{ background: T.dangerSoft, color: T.danger }}>
+                      <X size={12} />
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          {lista.length === 0 && (
+            <p className="px-5 py-5 text-[12.5px] text-center" style={{ color: T.muted }}>Todavía no has creado códigos de invitación.</p>
+          )}
+        </div>
+      )}
     </div>
   );
 }

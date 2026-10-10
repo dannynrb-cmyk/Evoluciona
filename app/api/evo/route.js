@@ -1,3 +1,4 @@
+import { verificarAcceso } from "../../../lib/acceso";
 // Ruta de servidor (nunca se ejecuta en el navegador) para el asistente "Evo".
 // Aquí es seguro usar la llave de servicio de Supabase y la llave de Gemini,
 // porque este archivo nunca se envía al cliente — solo vive en Vercel.
@@ -42,16 +43,10 @@ export async function POST(request) {
       return Response.json({ error: "Evo todavía no está configurado en el servidor (faltan llaves)." }, { status: 500 });
     }
 
-    // Verifica que el token realmente pertenezca a una sesión válida de Evoluciona
-    // (evita que cualquiera fuera de la app use la cuota gratuita de Evo).
-    const userRes = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${accessToken}` },
-    });
-    if (!userRes.ok) {
-      const detalle = await userRes.text().catch(() => "");
-      console.error("Evo: fallo verificando sesión ->", userRes.status, detalle);
-      return Response.json({ error: "Tu sesión expiró o no es válida. Cierra sesión y vuelve a entrar." }, { status: 401 });
-    }
+    // Verifica que quien pregunta sea un usuario real, aprobado y activo
+    // (evita que cualquiera recién registrado use a Evo o su cuota gratuita).
+    const acceso = await verificarAcceso(request);
+    if (!acceso.ok) return Response.json({ error: acceso.error }, { status: acceso.status });
 
     // Trae el contenido de Evoluciona con la llave de servicio (sin restricción de
     // RLS, porque ya confirmamos arriba que quien pregunta es un usuario real).

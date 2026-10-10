@@ -1,3 +1,4 @@
+import { verificarAcceso } from "../../../lib/acceso";
 // Consulta y confirma el grupo de Telegram vinculado al tablero de avisos.
 // GET  -> devuelve el estado actual (vinculado o solo detectado, pendiente).
 // POST -> el Maestro confirma que el grupo detectado es el correcto.
@@ -6,14 +7,8 @@ const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://zvyuqbrvix
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_KEY || "sb_publishable_G53F0OOT0-BzQlnXmen2XA_uZ1Yn9A9";
 
 async function verificarSesion(request) {
-  const authHeader = request.headers.get("authorization") || "";
-  const accessToken = authHeader.replace(/^Bearer\s+/i, "");
-  if (!accessToken) return { ok: false, status: 401, error: "Debes iniciar sesión." };
-  const userRes = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${accessToken}` },
-  });
-  if (!userRes.ok) return { ok: false, status: 401, error: "Tu sesión expiró o no es válida." };
-  return { ok: true };
+  // Ver o confirmar el grupo de Telegram es algo de Maestro.
+  return verificarAcceso(request, { requiereMaestro: true });
 }
 
 function headersServicio() {
