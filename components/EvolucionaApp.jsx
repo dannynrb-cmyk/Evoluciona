@@ -3743,21 +3743,189 @@ function calcularLiquidacion({ persona, rem, config, turnos, turnosExtra, festiv
   return { modalidad, lineas, total, totalHoras, horasExtraRegistradas, configurado: salario > 0, subtotalBase: salario };
 }
 
+// ---------- PDF de la liquidación estimada ----------
+// Genera un documento (una página por persona) con encabezado
+// "Sistema de Liquidación Evoluciona", servicio e institución, las fechas
+// (periodo del salario, corte de recargos/extras y fecha de pago), el detalle
+// de conceptos, el total, las notas y espacios de firma.
+const fechaCorta = (iso) => new Date(`${iso}T00:00:00`).toLocaleDateString("es-CO", { day: "numeric", month: "long", year: "numeric" });
+function rangoMesCompleto(hastaISO) {
+  const f = new Date(`${hastaISO}T00:00:00`);
+  return { ini: toISO(new Date(f.getFullYear(), f.getMonth(), 1)), fin: toISO(new Date(f.getFullYear(), f.getMonth() + 1, 0)) };
+}
+function generarPdfLiquidacion({ items, servicioNombre, institucionNombre, desde, hasta, fechaPago, config }) {
+  const doc = new jsPDF({ unit: "pt", format: "letter" });
+  const W = doc.internal.pageSize.getWidth();
+  const H = doc.internal.pageSize.getHeight();
+  const m = 40;
+  const azul = [37, 99, 235];
+  const gris = [100, 116, 139];
+  const tinta = [15, 23, 42];
+  const mes = rangoMesCompleto(hasta);
+  const generado = new Date().toLocaleString("es-CO", { day: "numeric", month: "long", year: "numeric", hour: "numeric", minute: "2-digit" });
+  const subtitulo = `Liquidación de ${servicioNombre || "servicio"}${institucionNombre ? ` de ${institucionNombre}` : ""}`;
+
+  items.forEach(({ p, r, bonif = 0, desc = 0 }, idx) => {
+    if (idx > 0) doc.addPage();
+    const esPS = r.modalidad === "prestacion";
+    // Encabezado
+    doc.setFillColor(...azul);
+    doc.rect(0, 0, W, 6, "F");
+    doc.setFont("helvetica", "bold"); doc.setFontSize(9); doc.setTextColor(...azul);
+    doc.text("SISTEMA DE LIQUIDACIÓN EVOLUCIONA", m, m);
+    doc.setFontSize(17); doc.setTextColor(...tinta);
+    doc.text(subtitulo, m, m + 22);
+    doc.setFont("helvetica", "normal"); doc.setFontSize(10); doc.setTextColor(...gris);
+    doc.text(esPS ? "Cuenta de cobro estimada · Prestación de servicios" : "Liquidación estimada · Contrato laboral", m, m + 38);
+
+    // Datos de la persona
+    let y = m + 64;
+    doc.setDrawColor(226, 232, 240);
+    doc.setFillColor(248, 250, 252);
+    doc.roundedRect(m, y, W - m * 2, 46, 6, 6, "FD");
+    doc.setFontSize(8.5); doc.setTextColor(...gris);
+    doc.text("COLABORADOR", m + 12, y + 16);
+    doc.text("CARGO", m + (W - m * 2) * 0.55, y + 16);
+    doc.setFont("helvetica", "bold"); doc.setFontSize(11.5); doc.setTextColor(...tinta);
+    doc.text(p.nombre || "-", m + 12, y + 33);
+    doc.text(p.cargo || "-", m + (W - m * 2) * 0.55, y + 33);
+
+    // Fechas
+    y += 62;
+    const fechas = esPS
+      ? [["Periodo liquidado (horas)", `${fechaCorta(desde)} – ${fechaCorta(hasta)}`], ["Fecha de pago", fechaPago ? fechaCorta(fechaPago) : "Por definir"]]
+      : [
+          ["Salario base (mes completo)", `${fechaCorta(mes.ini)} – ${fechaCorta(mes.fin)}`],
+          ["Corte de recargos, nocturnas y extras", `${fechaCorta(desde)} – ${fechaCorta(hasta)}`],
+          ["Fecha de pago", fechaPago ? fechaCorta(fechaPago) : "Por definir"],
+        ];
+    autoTable(doc, {
+      startY: y,
+      head: [["Fechas", ""]],
+      body: fechas,
+      theme: "plain",
+      headStyles: { fontStyle: "bold", textColor: azul, fontSize: 9 },
+      styles: { fontSize: 10, cellPadding: { top: 3, bottom: 3, left: 0, right: 0 }, textColor: tinta },
+      columnStyles: { 0: { textColor: gris, cellWidth: 210 }, 1: { fontStyle: "bold" } },
+      margin: { left: m, right: m },
+    });
+
+    // Detalle
+    y = doc.lastAutoTable.finalY + 14;
+    const cuerpo = r.lineas.map((l) => [
+      l.nota ? `${l.concepto}\n${l.nota}` : l.concepto,
+      l.horas == null ? "—" : fmtH(l.horas),
+      l.valor < 0 ? `(${fmtCOP(-l.valor)})` : fmtCOP(l.valor),
+    ]);
+    if (bonif) cuerpo.push(["Bonificaciones", "—", fmtCOP(bonif)]);
+    if (desc) cuerpo.push(["Descuentos", "—", `(${fmtCOP(desc)})`]);
+    const totalFinal = r.total + bonif - desc;
+    autoTable(doc, {
+      startY: y,
+      head: [["Concepto", "Horas", "Valor"]],
+      body: cuerpo,
+      foot: [[esPS ? "Total bruto estimado a facturar" : "Total neto estimado a recibir", fmtH(r.totalHoras) + " h", fmtCOP(totalFinal)]],
+      theme: "grid",
+      headStyles: { fillColor: azul, textColor: 255, fontSize: 9.5 },
+      footStyles: { fillColor: [239, 246, 255], textColor: [29, 78, 216], fontStyle: "bold", fontSize: 11 },
+      styles: { fontSize: 9.5, lineColor: [226, 232, 240], textColor: tinta, cellPadding: 6 },
+      columnStyles: { 1: { halign: "right", cellWidth: 70 }, 2: { halign: "right", cellWidth: 120 } },
+      didParseCell: (d) => {
+        if (d.section === "body" && d.column.index === 2 && String(d.cell.raw).startsWith("(")) d.cell.styles.textColor = [220, 38, 38];
+        if ((d.section === "foot" || d.section === "head") && d.column.index > 0) d.cell.styles.halign = "right";
+      },
+      margin: { left: m, right: m },
+    });
+
+    // Notas
+    y = doc.lastAutoTable.finalY + 16;
+    const notas = [];
+    if (r.horasExtraRegistradas > 0) notas.push(`Incluye ${fmtH(r.horasExtraRegistradas)} h de turnos extra registrados en Novedades.`);
+    if (esPS) {
+      notas.push("Valor bruto: horas trabajadas en el corte × valor hora pactado, con los recargos acordados para horas nocturnas y dominicales/festivas.");
+    } else {
+      notas.push("El salario base corresponde al mes completo (del 1.º al último día). Los recargos, nocturnas y extras se calculan con las fechas de corte indicadas.");
+      notas.push(config?.extrasPorExceso
+        ? `Se cuentan como extra las horas que superan ${fmtH(p.horas > 0 ? p.horas : config.jornadaSemanalMax)} h semanales y los turnos extra registrados.`
+        : "Solo se pagan como extra los turnos extra registrados en Novedades.");
+      notas.push("Salud y pensión se calculan sobre salario + recargos y extras.");
+    }
+    notas.push("Documento estimado para validación: no reemplaza la nómina ni la facturación oficial.");
+    doc.setFont("helvetica", "normal"); doc.setFontSize(8.5); doc.setTextColor(...gris);
+    notas.forEach((n) => {
+      const lineas = doc.splitTextToSize(`• ${n}`, W - m * 2);
+      if (y + lineas.length * 11 > H - 120) { doc.addPage(); y = m; }
+      doc.text(lineas, m, y);
+      y += lineas.length * 11 + 2;
+    });
+
+    // Firmas
+    let yf = Math.max(y + 50, H - 110);
+    if (yf > H - 60) { doc.addPage(); yf = m + 60; }
+    const anchoFirma = (W - m * 2 - 40) / 2;
+    doc.setDrawColor(...gris);
+    [[m, esPS ? "Contratista" : "Elaboró"], [m + anchoFirma + 40, "Revisó · Talento Humano"]].forEach(([x, rotulo]) => {
+      doc.line(x, yf, x + anchoFirma, yf);
+      doc.setFontSize(9); doc.setTextColor(...gris);
+      doc.text(rotulo, x, yf + 13);
+    });
+
+    // Pie
+    doc.setFontSize(7.5); doc.setTextColor(148, 163, 184);
+    doc.text(`Generado en Evoluciona · ${generado}`, m, H - 22);
+    doc.text(`${idx + 1} / ${items.length}`, W - m, H - 22, { align: "right" });
+  });
+  return doc;
+}
+function nombreArchivoSeguro(s) {
+  return (s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_|_$/g, "").toLowerCase();
+}
+
 function LiquidacionPanel({ ctx, turnos, personas, filtroPersonal, setFiltroPersonal, desde, hasta, festivoSet, etiquetaPeriodo }) {
   const { config, rem, error, cargando } = useLiquidacionDatos();
   const [bonif, setBonif] = useState("");
   const [desc, setDesc] = useState("");
+  const [fechaPago, setFechaPago] = useState(() => rangoMesCompleto(hasta).fin);
+  React.useEffect(() => { setFechaPago(rangoMesCompleto(hasta).fin); }, [hasta]);
   const turnosExtra = ctx.turnosExtra;
   const filas = personas.map((p) => ({ p, r: calcularLiquidacion({ persona: p, rem: rem[p.id], config, turnos, turnosExtra, festivoSet, desde, hasta }) }));
   const sel = filtroPersonal ? filas.find((f) => f.p.id === filtroPersonal) : null;
   const totalGeneral = filas.reduce((a, f) => a + f.r.total, 0);
+  const servicioNombre = ctx.servicioActual?.nombre || "";
+  const institucionNombre = ctx.institucionActual?.nombre || "";
+
+  function exportarPdf(items, sufijo) {
+    try {
+      const doc = generarPdfLiquidacion({ items, servicioNombre, institucionNombre, desde, hasta, fechaPago, config });
+      doc.save(`liquidacion_${nombreArchivoSeguro(servicioNombre)}_${nombreArchivoSeguro(sufijo)}_${hasta}.pdf`);
+      ctx.showToast("PDF de liquidación descargado");
+    } catch (e) {
+      ctx.showToast(`No se pudo generar el PDF: ${e.message}`, "warn");
+    }
+  }
+  const campoFechaPago = (
+    <label className="flex items-center gap-2 text-[12px]" style={{ color: T.muted }}>
+      Fecha de pago
+      <input type="date" value={fechaPago} onChange={(e) => setFechaPago(e.target.value)} style={{ ...inputStyle, width: 150, padding: "5px 8px" }} />
+    </label>
+  );
   return (
     <div className="ev-card overflow-hidden max-w-3xl">
-      <div className="px-4 py-3 border-b" style={{ borderColor: T.border }}>
-        <h3 className="ev-display font-semibold text-[13.5px] flex items-center gap-1.5"><FileBarChart size={14} /> Resumen de liquidación estimada · {etiquetaPeriodo}</h3>
-        <p className="text-[11.5px]" style={{ color: T.muted }}>
-          Solo visible para el Maestro. Es una estimación para consulta y validación previa; no reemplaza la nómina ni la facturación oficial.
-        </p>
+      <div className="px-4 py-3 border-b flex items-start justify-between gap-3 flex-wrap" style={{ borderColor: T.border }}>
+        <div>
+          <h3 className="ev-display font-semibold text-[13.5px] flex items-center gap-1.5"><FileBarChart size={14} /> Resumen de liquidación estimada · {etiquetaPeriodo}</h3>
+          <p className="text-[11.5px]" style={{ color: T.muted }}>
+            Solo visible para el Maestro. Es una estimación para consulta y validación previa; no reemplaza la nómina ni la facturación oficial.
+          </p>
+        </div>
+        {!cargando && config && !sel && filas.length > 0 && (
+          <div className="flex items-center gap-2 flex-wrap">
+            {campoFechaPago}
+            <button onClick={() => exportarPdf(filas.map(({ p, r }) => ({ p, r })), "todos")} className="ev-btn px-3 py-1.5 text-[12px]" style={{ border: `1px solid ${T.primary}`, color: T.primary }}>
+              <Download size={13} /> PDF de todos
+            </button>
+          </div>
+        )}
       </div>
       {cargando && <p className="px-4 py-4 text-[12.5px]" style={{ color: T.muted }}>Cargando parámetros…</p>}
       {!cargando && (error || !config) && (
@@ -3820,7 +3988,17 @@ function LiquidacionPanel({ ctx, turnos, personas, filtroPersonal, setFiltroPers
                   {r.horasExtraRegistradas > 0 ? ` (incluye ${fmtH(r.horasExtraRegistradas)} h de turnos extra registrados)` : ""}
                 </p>
               </div>
-              <button onClick={() => setFiltroPersonal("")} className="ev-btn px-3 py-1.5 text-[12px]" style={{ border: `1px solid ${T.border}` }}>Ver a todos</button>
+              <div className="flex items-center gap-2 flex-wrap">
+                {campoFechaPago}
+                <button
+                  onClick={() => exportarPdf([{ p: sel.p, r, bonif: b, desc: d }], sel.p.nombre)}
+                  className="ev-btn px-3 py-1.5 text-[12px] text-white"
+                  style={{ background: T.primary }}
+                >
+                  <Download size={13} /> Exportar PDF
+                </button>
+                <button onClick={() => setFiltroPersonal("")} className="ev-btn px-3 py-1.5 text-[12px]" style={{ border: `1px solid ${T.border}` }}>Ver a todos</button>
+              </div>
             </div>
             {!r.configurado && (
               <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-[12.5px]" style={{ background: T.accentSoft, color: T.accentInk }}>
